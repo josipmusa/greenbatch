@@ -10,6 +10,39 @@ permissions:
   contents: read
 
 jobs:
+  dco:
+    name: DCO sign-off
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # CONTRIBUTING.md requires a sign-off on every commit. Asking for one and
+      # never checking means the requirement is discovered at the worst moment,
+      # by the contributor who did the most work.
+      - name: Every commit in this PR is signed off
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          missing=0
+          while read -r sha; do
+            [ -n "$sha" ] || continue
+            author="$(git show -s --format='%an <%ae>' "$sha")"
+            if ! git show -s --format='%B' "$sha" | grep -qiF "Signed-off-by: $author"; then
+              echo "::error::$(git show -s --format='%h %s' "$sha") is missing 'Signed-off-by: $author'"
+              missing=1
+            fi
+          done < <(git rev-list --no-merges "$BASE..$HEAD")
+
+          if [ "$missing" -ne 0 ]; then
+            echo "Sign off with: git commit -s   (or: git rebase --signoff $BASE)" >&2
+            exit 1
+          fi
+          echo "all commits signed off"
+
   lint:
     name: shellcheck
     runs-on: ubuntu-latest

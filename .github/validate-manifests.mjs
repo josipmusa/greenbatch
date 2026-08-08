@@ -147,6 +147,37 @@ for (const name of skillNames) {
   }
 }
 
+// ------------------------------------------------------------- commands/
+
+// A slash command is the first thing anyone types, so a broken one is the most
+// visible possible defect. This exists because the README documented
+// `/greenbatch run` for a command that had no file at all.
+const commandsDir = path.join(root, 'commands')
+let commandFiles = []
+try {
+  commandFiles = (await readdir(commandsDir, { withFileTypes: true }))
+    .filter((e) => e.isFile() && e.name.endsWith('.md'))
+    .map((e) => e.name)
+} catch {
+  complain('commands/', 'directory is missing')
+}
+
+if (commandFiles.length === 0) complain('commands/', 'contains no commands')
+
+for (const file of commandFiles) {
+  const rel = `commands/${file}`
+  const raw = await readFile(path.join(commandsDir, file), 'utf8')
+
+  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n/.exec(raw)
+  if (!match) {
+    complain(rel, 'has no YAML frontmatter block')
+    continue
+  }
+  if (!/^description:\s*\S/m.test(match[1])) {
+    complain(rel, 'frontmatter is missing a description')
+  }
+}
+
 // --------------------------------------------------------- adapter.json
 
 const adaptersDir = path.join(root, 'skills/greenbatch/scripts/adapters')
@@ -176,6 +207,26 @@ for (const adapter of adapters) {
   if (!manifest.conformance || typeof manifest.conformance.unmatchedId !== 'string') {
     complain(rel, 'conformance.unmatchedId is required so the exit-4 check can run')
   }
+  const rejectFixtures = manifest.conformance?.rejectFixtures
+  if (rejectFixtures !== undefined) {
+    if (!Array.isArray(rejectFixtures)) {
+      complain(rel, 'conformance.rejectFixtures, when present, must be an array of paths')
+    } else {
+      // A decoy that has been renamed or deleted turns a real assertion into a
+      // conformance error nobody sees until CI runs.
+      for (const dir of rejectFixtures) {
+        if (!existsSync(path.join(root, dir))) {
+          complain(rel, `conformance.rejectFixtures names a missing directory: ${dir}`)
+        }
+      }
+    }
+  }
+  if (
+    manifest.conformance?.gate !== undefined &&
+    typeof manifest.conformance.gate !== 'string'
+  ) {
+    complain(rel, 'conformance.gate, when present, must be a command string')
+  }
   if (!Array.isArray(manifest.manifests) || manifest.manifests.length === 0) {
     complain(rel, 'manifests must list the files this adapter edits')
   }
@@ -194,5 +245,6 @@ if (problems.length > 0) {
 }
 
 process.stdout.write(
-  `validate-manifests: ok (${skillNames.length} skill(s), ${adapters.length} adapter(s))\n`,
+  `validate-manifests: ok (${skillNames.length} skill(s), ${commandFiles.length} command(s), ` +
+    `${adapters.length} adapter(s))\n`,
 )

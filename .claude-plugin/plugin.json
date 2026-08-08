@@ -11,6 +11,10 @@
     "maven",
     "security"
   ],
+  "author": {
+    "name": "Josip Musa",
+    "url": "https://github.com/josipmusa"
+  },
   "license": "MIT",
   "homepage": "https://github.com/josipmusa/greenbatch",
   "repository": "https://github.com/josipmusa/greenbatch"
