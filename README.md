@@ -109,9 +109,8 @@ prints ready-to-paste PR bodies instead of filing them.
 
 ## Config
 
-`.claude/greenbatch.yml` is canonical. If it is absent, `greenbatch.yml` at the repo root
-is used instead, so agents other than Claude Code can drive this without a `.claude/`
-directory. If both exist, `.claude/` wins and the run says so. Check yours any time with
+`.claude/greenbatch.yml` is canonical, falling back to `greenbatch.yml` at the repo root
+so agents other than Claude Code can drive this. Check yours any time with
 `scripts/core/config.mjs .`.
 
 ```yaml
@@ -130,23 +129,17 @@ commit_prefix: "build"
 max_gate_runs: 30         # one counter across the whole run
 ```
 
-| Key | Meaning |
-|---|---|
-| `branches.base` | The deps branch is cut from `origin/<base>` and stays a clean deps-only diff. |
-| `branches.targets` | Every target gets a PR. Non-base targets get a derived branch so the base-bound PR is not polluted with their unreleased commits. |
-| `gate` | The command that decides whether a batch survives. Include the build step - a gate that only runs unit tests silently weakens every claim in the report. |
-| `groups` | Atomic groups that cross ecosystems. Members apply, gate, commit, and revert as one, and the bisect never splits them. |
-| `risky` | Forced to tier 2 regardless of bump. Frameworks and bundlers belong here. |
-| `reject` | Never touched, and reported as an intentional pin. Supports `*` suffixes. |
-| `max_gate_runs` | Budget for the whole run. Tier 1 always completes; tier 2 and the transitive pass spend what is left. |
+Three keys behave in ways the comments above do not give away. Non-base `targets` each
+get a derived branch, so the base-bound PR is not polluted with their unreleased commits.
+`gate` should include your build step - one that only runs unit tests silently weakens
+every claim in the report. And `max_gate_runs` is a budget for the whole run, but tier 1
+always completes; tier 2 and the transitive pass spend what is left.
 
-The file is read by `scripts/core/config.mjs`, not interpreted per run. An unknown key
-is an error naming the line and the key you probably meant, never a silent fallback to
-the default - `rejects:` for `reject:` would otherwise mean a package you deliberately
-pinned gets updated with nothing in the report about it.
-
-Grouping inside an ecosystem needs no config: the npm adapter already treats a shared
-scope, and a package with its `@types` stub, as one atomic element.
+An unknown key is an error naming the line and the key you probably meant, never a silent
+fallback to the default - `rejects:` for `reject:` would otherwise mean a package you
+deliberately pinned gets updated with nothing in the report about it. Grouping inside an
+ecosystem needs no config at all: the npm adapter already treats a shared scope, and a
+package with its `@types` stub, as one atomic element.
 
 ## How a run goes
 
@@ -176,72 +169,38 @@ flowchart TD
     AB --> RS
 ```
 
-1. **Preflight.** Abort on a dirty tree. Record the current branch. Read and validate the
-   config. Fetch. Close superseded PRs from previous runs - only ones with a dated
-   branch name *and* this tool's marker in the body. Cut `deps/YYYY-MM-DD` from
-   `origin/<base>`.
-2. **Clean gate.** Run the gate on the untouched branch. If it fails, stop - the base is
-   broken and every later failure would be blamed on a dependency.
-3. **Discover and plan.** Adapters report the available updates; the planner assigns
-   tiers, resolves groups, and estimates the gate budget.
-4. **Tier 1** (patch + minor) in one batch, one gate run. On failure, bisect.
-5. **Tier 2** (majors, risky, unclassifiable) one at a time, changelog read *before*
-   applying. Unattemptable ones are skipped with a migration note, not attempted and
-   reverted.
-6. **Transitive pass.** `npm audit fix` (never `--force`), gated like everything else.
-7. **PRs.** One toward base with the full report, one per other target with a short body.
-8. **Restore** your original branch and reinstall, whatever happened.
-
-Full detail in [skills/greenbatch/SKILL.md](skills/greenbatch/SKILL.md); the reasoning in
-[docs/design.md](docs/design.md).
+Every branch of that diagram ends at the same place: your original branch, restored, with
+a report written. Step by step in
+[skills/greenbatch/SKILL.md](skills/greenbatch/SKILL.md); the reasoning behind the shape
+in [docs/design.md](docs/design.md).
 
 ## Headless
 
 Headless means a `claude -p` session with nobody watching - on your workstation, a build
-server, or a disposable cloud VM - not a particular CI product. The differences from an
-interactive run are explicit rather than emergent: an over-budget plan proceeds and
-reports instead of asking, a missing or invalid config aborts rather than being guessed
-at or repaired, and every stop condition writes `.git/greenbatch/report.md` so a
-scheduled run always leaves an artifact.
+server, or a disposable cloud VM - not a particular CI product. An over-budget plan
+proceeds and reports instead of asking, an invalid config aborts rather than being
+repaired, and every stop condition writes `.git/greenbatch/report.md`, so a scheduled run
+always leaves an artifact.
 
-Invocation examples, cron and systemd timers, required environment, and report-only
-mode: [docs/headless.md](docs/headless.md).
+Invocation, cron and systemd timers, required environment, and report-only mode:
+[docs/headless.md](docs/headless.md).
 
 ## Safety model
 
-greenbatch is an agent following a written procedure, using deterministic scripts for
-the mechanical parts. That distinction matters for how much weight each rule below
-carries, so the table is split by it rather than presented as one undifferentiated list
-of "guarantees".
+greenbatch **never force-pushes**, and the one script that touches a remote pushes
+nothing but the `deps/YYYY-MM-DD` branches it created - never your base or target
+branches. It **never deletes a branch it did not create**, **never merges** a PR,
+**never edits your source** to make a breaking change fit, and **never runs
+`npm audit fix --force`**.
+It **aborts on a dirty tree** and on a gate that was already failing before it touched
+anything, and it **restores your original branch on every exit path**.
 
-**Enforced by code.** A script refuses; there is no path around it short of editing the
-script.
-
-| Rule | Enforced by |
-|---|---|
-| **Never force-pushes**, and only ever pushes `deps/YYYY-MM-DD[-target]` branches - never your base or target branches. Refuses refspecs and flags outright. | `scripts/core/push.sh` |
-| **Never deletes a branch it did not create.** Stale-PR cleanup needs a dated branch name *and* a run marker in the PR body. | `scripts/core/push.sh`, SKILL.md step 1.7 |
-| **Never commits a no-op.** An apply that changed nothing exits 4 and is treated as an error. | `scripts/adapters/*/apply`, conformance |
-| **Never applies a version it did not discover and report.** The version is part of the element id; conformance compares what landed against what was planned. | `conformance/run.sh`, stage 4 |
-| **Never silently accepts a config it did not understand.** An unknown key or wrong type is an error with a line number, not a fallback to defaults. | `scripts/core/config.mjs` |
-| **Never invents a gate.** There is no default and no way to supply one implicitly. | `scripts/core/config.mjs` |
-
-**Rules the run follows.** Part of the procedure in
-[SKILL.md](skills/greenbatch/SKILL.md), which the agent is instructed to follow, and
-which you can read in full.
-
-| Rule | Where |
-|---|---|
-| **Never merges a PR.** It opens them and stops. | *Safety rules* |
-| **Never runs `npm audit fix --force`** - that takes majors without gating them. | Step 6 |
-| **Never edits source code to accommodate a breaking change.** It reports what breaks and leaves the decision to you. | Step 5 |
-| **Aborts on a dirty working tree.** No stashing, no committing your work. | Step 1 |
-| **Aborts if the gate fails on the clean branch**, before touching anything. | Step 2 |
-| **Restores your original branch on every exit path** - success, abort, or failure - and reinstalls so your tree matches it. | Step 8 |
-
-The scripts are readable in an afternoon and runnable outside any agent. See
-[SECURITY.md](SECURITY.md) for the trust boundaries, including what running this against
-a repository means for the code it executes.
+Some of that is enforced by a script that refuses, and the rest is part of the written
+procedure the agent follows. The distinction is real, so
+[SECURITY.md](SECURITY.md) states which rule is which rather than presenting one
+undifferentiated list of "guarantees" - alongside the trust boundaries, including what
+running this against a repository means for the code it executes. The scripts are
+readable in an afternoon and runnable outside any agent.
 
 ## Ecosystems
 
