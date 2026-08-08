@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check every shell script
+        run: |
+          # The adapter scripts have no extension on purpose, so they are named
+          # explicitly rather than globbed by suffix.
+          mapfile -t scripts < <(
+            find skills/greenbatch/scripts conformance -type f \
+              \( -name '*.sh' -o -name detect -o -name discover -o -name apply -o -name revert \)
+          )
+          printf 'checking %s\n' "${scripts[@]}"
+          shellcheck "${scripts[@]}"
+
+      - name: Reject GNU-only tools the scripts must not depend on
+        run: |
+          # `timeout` does not exist on macOS; a script that reaches for it works
+          # in CI and breaks on a developer laptop.
+          if grep -rnE '(^|[^[:alnum:]_./-])timeout[[:space:]]' \
+               skills/greenbatch/scripts conformance; then
+            echo "::error::found a use of 'timeout', which is unavailable on macOS" >&2
+            exit 1
+          fi
+
+  test:
+    name: unit tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      # A directory argument to `node --test` is broken in the Node 22 line; the
+      # glob form works on every version.
+      - run: node --test skills/greenbatch/tests/*.test.mjs
+
+  manifests:
+    name: plugin manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Validate JSON and the SKILL.md frontmatter
+        run: node .github/validate-manifests.mjs
+
+  conformance:
+    name: conformance ${{ matrix.adapter }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        adapter: [npm, maven]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v5
+        if: matrix.adapter == 'maven'
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+
+      - uses: actions/setup-python@v5
+        if: matrix.adapter == 'maven'
+        with:
+          python-version: "3.12"
+
+      # --strict turns a missing toolchain into a failure instead of a skip, so a
+      # runner that quietly lost its JDK cannot report a green suite.
+      - run: conformance/run.sh --strict ${{ matrix.adapter }} fixtures/${{ matrix.adapter }}-basic
