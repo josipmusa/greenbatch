@@ -4,9 +4,23 @@
 # against the tree the failed batch left behind.
 #
 # Usage: revert [repo-dir]
+#
+# `git checkout HEAD --` rather than `git checkout --`: the latter restores from
+# the index, so anything the run had already staged would survive a revert and
+# be carried into the next batch as if it had passed the gate. HEAD is the only
+# reference that means "the state this branch was in before we touched it".
 set -euo pipefail
 
 cd "${1:-.}"
 
-git checkout -- package.json package-lock.json
+git checkout HEAD -- package.json
+
+# A repo that does not track its lockfile is unusual but real, and refusing to
+# revert at all because of it would strand the tree mid-batch.
+if git ls-files --error-unmatch package-lock.json >/dev/null 2>&1; then
+  git checkout HEAD -- package-lock.json
+elif [ -f package-lock.json ]; then
+  echo "npm/revert: package-lock.json is untracked - reverting package.json only." >&2
+fi
+
 npm ci >/dev/null 2>&1 || npm install >/dev/null 2>&1

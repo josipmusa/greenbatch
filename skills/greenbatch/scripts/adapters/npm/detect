@@ -4,10 +4,44 @@
 # Usage: detect [repo-dir]        (default: current directory)
 # Exit:  0 this adapter applies; 1 it does not
 #
-# Detection is a file test and nothing more: it must stay cheap enough for the
-# orchestrator to run every installed adapter on every run.
+# A package.json is necessary but not sufficient. pnpm, yarn, and bun projects
+# all have one, and this adapter would go on to run `npm install` in them -
+# generating a package-lock.json the project does not use, that `revert` cannot
+# restore because git has never seen it, and that quietly competes with the real
+# lockfile. Claiming a repo it cannot correctly manage is worse than declining
+# it, so the competing managers are ruled out explicitly.
+#
+# Detection stays cheap: file tests plus one read of package.json, no network
+# and no install. The orchestrator runs this for every installed adapter on
+# every run, before any useful work has happened.
 set -euo pipefail
 
 repo="${1:-.}"
 
-[ -f "$repo/package.json" ]
+[ -f "$repo/package.json" ] || exit 1
+
+# A lockfile is the strongest statement a repo makes about its package manager.
+for lock in pnpm-lock.yaml yarn.lock bun.lockb bun.lock; do
+  if [ -f "$repo/$lock" ]; then
+    echo "npm/detect: declining '$repo' - $lock says this project is not managed by npm." >&2
+    exit 1
+  fi
+done
+
+# corepack's `packageManager` field is the other explicit statement.
+manager=$(node -e '
+  const fs = require("fs")
+  try {
+    const pkg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))
+    process.stdout.write(String(pkg.packageManager ?? "").split("@")[0])
+  } catch {
+    // An unreadable or invalid package.json is not this adapter to interpret;
+    // treat it as unclaimed rather than guessing.
+    process.exit(1)
+  }
+' "$repo/package.json") || exit 1
+
+if [ -n "$manager" ] && [ "$manager" != "npm" ]; then
+  echo "npm/detect: declining '$repo' - packageManager is '$manager', not npm." >&2
+  exit 1
+fi

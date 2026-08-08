@@ -1,0 +1,11 @@
+{
+  "name": "greenbatch-fixture-npm-pnpm",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Conformance decoy: a Node project managed by pnpm. The npm adapter must refuse it - running npm install here would generate a package-lock.json the repository does not use and cannot revert.",
+  "license": "MIT",
+  "packageManager": "pnpm@9.12.0",
+  "dependencies": {
+    "ms": "2.0.0"
+  }
+}
