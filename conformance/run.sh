@@ -7,8 +7,12 @@
 #
 # An adapter that passes this suite satisfies the contract in docs/adapters.md
 # and is mergeable. Nothing here knows anything about a specific ecosystem: the
-# adapter's own manifest supplies the tool list and the deliberately-unmatched
-# element id, and every assertion is made through git and the facts JSON.
+# adapter's own manifest supplies the tool list, the deliberately-unmatched
+# element id, the near-miss directories it must refuse, and its fixture gate.
+# Every assertion is made through git, the facts JSON, and the applied record.
+#
+# Stages: detect (including declared decoys), discover, apply, pinning, exit 4,
+# fixture gate (optional), revert.
 #
 # The fixture must be a committed part of this repository - "revert restores the
 # tree" is checked against git HEAD, so an uncommitted fixture cannot be graded.
@@ -98,7 +102,8 @@ restore() {
 trap restore EXIT
 
 facts=$(mktemp)
-trap 'restore; rm -f "$facts"' EXIT
+applied=$(mktemp)
+trap 'restore; rm -f "$facts" "$applied"' EXIT
 
 # ---------------------------------------------------------------- 1. detect
 
@@ -111,6 +116,22 @@ if "$adapter/detect" "$repo_root/conformance" 2>/dev/null; then
   fail "detect claims a directory with no manifest of its ecosystem"
 fi
 pass "detect rejects an unrelated directory"
+
+# The hard cases are the near misses: a project in the same LANGUAGE managed by
+# a different tool. Only the adapter knows what those look like, so it names
+# them, and this asserts it actually refuses them. npm declares a pnpm project -
+# claiming one means installing with the wrong tool and writing a lockfile the
+# project does not use and revert cannot restore.
+while IFS= read -r decoy; do
+  [ -n "$decoy" ] || continue
+  [ -d "$repo_root/$decoy" ] || fail "conformance.rejectFixtures names a missing directory: $decoy"
+  if "$adapter/detect" "$repo_root/$decoy" 2>/dev/null; then
+    fail "detect claimed '$decoy', which this adapter declares it must refuse"
+  fi
+  note "declined $decoy, as declared"
+done < <(node -e "$read_json"'
+  for (const d of j.conformance?.rejectFixtures ?? []) console.log(d)
+' "$manifest")
 
 # ---------------------------------------------------------------- 2. discover
 
@@ -141,11 +162,69 @@ element_id=$(node -e "$read_json"'
 ' "$facts") || fail "could not choose an element to apply"
 
 note "applying element: $element_id"
-"$adapter/apply" "$fixture_abs" "$element_id" >/dev/null || fail "apply exited non-zero for a discovered element"
+"$adapter/apply" "$fixture_abs" "$element_id" >"$applied" || fail "apply exited non-zero for a discovered element"
 fixture_dirty || fail "apply reported success but changed nothing in the tree"
 pass "apply changes the manifest for a discovered element"
 
-# ---------------------------------------------------------------- 4. exit 4
+# ------------------------------------------------------------- 4. pinning
+
+# The load-bearing check for the report's honesty: what landed in the manifest
+# has to be the version discovery offered, not whatever "latest" resolves to at
+# apply time. Without this an adapter can re-resolve on apply and silently take
+# a release published mid-run - a major would enter the tier-1 batch with its
+# changelog unread, and the PR body would name a version nobody planned.
+#
+# `to` is compared against the manifest read-back in the applied record, so an
+# adapter cannot satisfy this by echoing the id back.
+step=$((step + 1))
+# shellcheck disable=SC2016  # ${...} here is JS template syntax, not shell
+node -e '
+  const fs = require("fs")
+  const facts = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))
+  const id = process.argv[3]
+
+  let record
+  try {
+    record = JSON.parse(fs.readFileSync(process.argv[2], "utf8"))
+  } catch (err) {
+    console.error(`apply printed no parseable applied record: ${err.message}`)
+    process.exit(1)
+  }
+
+  if (!Array.isArray(record.applied)) {
+    console.error("apply must print {\"applied\": [...]} on stdout")
+    process.exit(1)
+  }
+
+  const entry = record.applied.find((a) => a && a.id === id)
+  if (!entry) {
+    console.error(`applied record has no entry for the id it was given (${id})`)
+    process.exit(1)
+  }
+  for (const field of ["id", "name", "to"]) {
+    if (typeof entry[field] !== "string" || entry[field].trim() === "") {
+      console.error(`applied[].${field} must be a non-empty string, got ${JSON.stringify(entry[field])}`)
+      process.exit(1)
+    }
+  }
+
+  const planned = (facts.updates ?? []).find((u) => u.id === id)
+  if (!planned) {
+    console.error(`the facts no longer contain the id that was applied (${id})`)
+    process.exit(1)
+  }
+  if (entry.to !== planned.to) {
+    console.error(
+      `apply did not pin the discovered version: discover offered ${planned.to}, ` +
+        `the manifest now says ${entry.to}. apply must write the version the ` +
+        `element id names rather than re-resolving latest.`,
+    )
+    process.exit(1)
+  }
+' "$facts" "$applied" "$element_id" || fail "apply did not pin the version discover offered"
+pass "apply pinned exactly the version discover offered"
+
+# ---------------------------------------------------------------- 5. exit 4
 
 step=$((step + 1))
 unmatched=$(node -e "$read_json"'
@@ -164,7 +243,26 @@ set -e
 [ "$code" -eq 4 ] || fail "apply on an unmatched element exited $code, contract requires 4"
 pass "apply exits 4 when nothing changed"
 
-# ---------------------------------------------------------------- 5. revert
+# ------------------------------------------------------------ 6. fixture gate
+
+# Optional, and the only stage that asks whether the update actually WORKS
+# rather than whether the manifest moved. An adapter that declares a gate is
+# claiming its apply leaves an installable, usable tree - which is the claim the
+# whole tool rests on.
+gate=$(node -e "$read_json"'
+  process.stdout.write(j.conformance?.gate ?? "")
+' "$manifest")
+
+if [ -n "$gate" ]; then
+  step=$((step + 1))
+  note "fixture gate: $gate"
+  if ! (cd "$fixture_abs" && sh -c "$gate") >/dev/null 2>&1; then
+    fail "the adapter's declared fixture gate failed after apply"
+  fi
+  pass "the fixture still builds after the update"
+fi
+
+# ---------------------------------------------------------------- 7. revert
 
 step=$((step + 1))
 "$adapter/revert" "$fixture_abs" || fail "revert exited non-zero"
