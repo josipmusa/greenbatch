@@ -28,13 +28,21 @@ directory is not the current one.
 
 ### `detect [repo-dir]`
 
-Exit `0` if this adapter applies to the repo, `1` if it does not. No output.
+Exit `0` if this adapter applies to the repo, `1` if it does not. A declined repo may
+print one line of reason on stderr; nothing goes to stdout.
 
-Keep it to a file test. The orchestrator (`scripts/core/detect.sh`) runs every installed
-adapter's `detect` on every run, so anything that touches the network or the build
-system here is a cost the whole run pays.
+Keep it to file tests and, at most, one read of the manifest. The orchestrator
+(`scripts/core/detect.sh`) runs every installed adapter's `detect` on every run, so
+anything that touches the network or the build system here is a cost the whole run pays.
 
-A `detect` that returns 0 for any directory fails conformance.
+**Detect the package manager, not just the language.** A `package.json` is present in
+pnpm, yarn, and bun projects too, and an adapter that claims one of those will install
+with the wrong tool, write a lockfile the project does not use, and be unable to revert
+it because git has never seen the file. Rule out the managers you are not: a competing
+lockfile and a `packageManager`-style declaration are both explicit statements.
+
+A `detect` that returns 0 for any directory fails conformance. Declare the decoys your
+adapter must refuse in `conformance.rejectFixtures` and conformance will assert it.
 
 ### `discover [repo-dir]`
 
@@ -52,17 +60,34 @@ ecosystem, before any useful work has happened.
 
 ### `apply <repo-dir> <element-id>...`
 
-Applies the named elements. Prints whatever record of what landed the adapter can
-produce (npm prints `{"applied":[...]}`); core reports from it rather than from the
-plan, so the PR body quotes reality.
+Applies the named elements and prints, on stdout, the record of what landed:
+
+```json
+{
+  "applied": [
+    { "id": "zod@3.24.0", "name": "zod", "to": "3.24.0" }
+  ]
+}
+```
+
+One entry per element id it was given, in the order given. **`to` must be read back out
+of the manifest after the edit**, never echoed from the element id - a tool that reports
+success while writing a different version, or writing nothing for one id in a batch, is
+exactly the drift the report must not inherit. Core reports from this record rather than
+from the plan, so the PR body quotes the file.
 
 Exit codes:
 
 | Code | Meaning |
 |---|---|
-| `0` | Applied. The manifest changed. |
-| `2` | Tool failure, or an element id this adapter cannot parse. |
+| `0` | Applied. The manifest changed, and every element id matched. |
+| `2` | Tool failure, an element id this adapter cannot parse, or a *partial* match. |
 | `4` | **Nothing changed.** |
+
+Exit `2` on a partial match rather than `0`: half an element list applied is worse than
+none of it, because the batch would be committed and reported as complete while some
+packages never moved. Stale discovery is the usual cause, and core's response is to
+re-discover.
 
 **Exit 4 is the load-bearing one.** A filter that matches nothing typically leaves the
 manifest untouched while the underlying tool still exits 0. Without this check the run
@@ -73,7 +98,10 @@ element list and never commits the result.
 
 `apply` must pin the exact version the element id names rather than re-resolving
 "latest", so that what lands is what was planned and reported even if a release happens
-mid-run.
+mid-run. This is why both reference adapters carry the target version *inside* the
+element id: an id that is only a package name leaves `apply` nothing to pin to, and a
+major published between discovery and apply enters the tier-1 batch with its changelog
+unread. Conformance checks this by comparing the `applied` record against the facts.
 
 ### `revert [repo-dir]`
 
@@ -96,7 +124,7 @@ The output of `discover`, and the entire adapter-to-core interface.
   "capabilities": ["lockfile", "audit"],
   "updates": [
     {
-      "id": "zod",
+      "id": "zod@3.24.0",
       "name": "zod",
       "from": "3.22.0",
       "to": "3.24.0",
@@ -106,7 +134,8 @@ The output of `discover`, and the entire adapter-to-core interface.
       "family": null
     }
   ],
-  "unmanageable": []
+  "unmanageable": [],
+  "notes": []
 }
 ```
 
@@ -118,6 +147,12 @@ The output of `discover`, and the entire adapter-to-core interface.
 | `updates` | yes | Everything this run could move. May be empty. |
 | `unmanageable` | **yes** | Everything it could not. May be empty, but the key must be present. |
 | `capabilities` | no | What this ecosystem supports. Core budgets a gate run for the transitive pass when `audit` is present. |
+| `notes` | no | Caveats about the *scope* of this discovery. Core prefixes each with the ecosystem and carries it into the report. |
+
+`notes` and `unmanageable` answer different questions. `unmanageable` is "this specific
+update exists and I cannot move it". A note is "I did not look here at all" - the Maven
+adapter emits one when a reactor's child modules went unscanned. Both exist so that
+silence in the report can be trusted to mean *nothing to report*.
 
 ### An update
 
@@ -137,10 +172,15 @@ anything it does not recognise through to the report untouched.
 
 ### `id` and `mechanism`
 
-The element id is the adapter's private business. npm's is simply the package name.
-Maven's encodes the lever along with the coordinate and the target version:
+The element id is the adapter's private business, with one requirement: it must carry
+enough to pin the exact target version, because that is what makes `apply` reproducible.
+npm's is `name@version`, split on the last `@` so scopes survive. Maven's also encodes
+the lever, because the coordinate alone does not say which one moves it:
 
 ```
+zod@3.24.0
+@mantine/core@9.5.1
+
 property:springdoc.version=3.1.0
 dependency:org.postgresql:postgresql=42.7.13
 parent=4.2.0
@@ -238,16 +278,25 @@ and that is the one wrong impression this tool must never leave.
   "lockfiles": ["package-lock.json"],
   "requires": ["node", "npm", "git"],
   "capabilities": ["lockfile", "audit", "family", "bump", "prerelease"],
-  "conformance": { "unmatchedId": "greenbatch-no-such-package-9f3a1c" }
+  "conformance": {
+    "unmatchedId": "greenbatch-no-such-package-9f3a1c@1.0.0",
+    "rejectFixtures": ["fixtures/npm-pnpm"],
+    "gate": "npm run verify"
+  }
 }
 ```
 
 `requires` lists the executables the adapter needs on PATH; conformance skips (or, with
 `--strict`, fails) when one is missing, instead of reporting a confusing failure.
 
-`conformance.unmatchedId` is a syntactically valid element id that is guaranteed to
-match nothing. Conformance applies it and requires exit 4. Only the adapter knows its
-own id syntax, so only the adapter can supply this.
+The `conformance` block is how a generic suite tests an ecosystem it knows nothing about.
+Only the adapter can supply these:
+
+| Key | Required | What conformance does with it |
+|---|---|---|
+| `unmatchedId` | yes | A syntactically valid element id guaranteed to match nothing. Applied; exit 4 required. |
+| `rejectFixtures` | no | Directories `detect` must decline. Each is asserted non-zero. |
+| `gate` | no | A command run inside the fixture after `apply`, proving the applied update leaves a working tree. |
 
 `status` is `core` or `community`; see CONTRIBUTING.md.
 

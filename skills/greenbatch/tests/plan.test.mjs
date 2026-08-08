@@ -590,3 +590,22 @@ test('updates with no available lever are carried through, not dropped', () => {
     ['org.postgresql:postgresql'],
   )
 })
+
+test('discovery-scope notes reach the plan so the report can carry them', () => {
+  // Distinct from `unmanageable`, which is about individual updates: a note is
+  // about what discovery did NOT look at. Without it the report silently claims
+  // a coverage it never had.
+  const plan = buildPlan({
+    updates: [npm('zod', '3.22.0', '3.24.0')],
+    notes: ['multi-module project: discovery scanned the root pom only'],
+    config: config(),
+  })
+
+  assert.deepEqual(plan.notes, ['multi-module project: discovery scanned the root pom only'])
+})
+
+test('a plan with nothing to caveat still carries an empty notes list', () => {
+  const plan = buildPlan({ updates: [], config: config() })
+
+  assert.deepEqual(plan.notes, [])
+})

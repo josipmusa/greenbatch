@@ -33,6 +33,15 @@ function validate(facts) {
     }
   }
 
+  // Caveats about the SCOPE of the discovery itself, as opposed to individual
+  // updates the run cannot make. A reader who is not told that a Maven reactor's
+  // child modules went unscanned reads the report as covering the whole project.
+  if (facts.notes !== undefined) {
+    if (!Array.isArray(facts.notes) || !facts.notes.every(isNonEmptyString)) {
+      complain('facts.notes', 'when present, must be an array of non-empty strings')
+    }
+  }
+
   // Rule 3: reporting is mandatory. An adapter that cannot pin anything still
   // has to say so with an empty array, because a missing key and "nothing to
   // report" are indistinguishable to a reader of the PR body.

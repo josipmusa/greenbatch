@@ -100,6 +100,7 @@ export function buildPlan({
   alerts = [],
   unmanageable = [],
   capabilities = [],
+  notes = [],
 }) {
   const reject = config.reject ?? []
   const risky = config.risky ?? []
@@ -230,6 +231,10 @@ export function buildPlan({
     // Available updates with no lever this run can pull (a version pinned by a
     // parent or an imported BOM). Reported so the PR body can say so out loud.
     unmanageable,
+    // Caveats about what discovery did not look at, as opposed to what it could
+    // not move. A run that scanned only a Maven reactor's root pom has to say
+    // so, or the report claims a coverage it never had.
+    notes,
     maxGateRuns,
     estimatedGateRuns,
     overBudget: estimatedGateRuns > maxGateRuns,
@@ -277,7 +282,10 @@ async function main(argv) {
   const updates = facts.flatMap((f) => stamp(f, 'updates'))
   const unmanageable = facts.flatMap((f) => stamp(f, 'unmanageable'))
   const capabilities = [...new Set(facts.flatMap((f) => f.capabilities ?? []))]
-  const plan = buildPlan({ updates, config, alerts, unmanageable, capabilities })
+  // Notes are prefixed with their ecosystem: "the root pom only" means nothing
+  // in a report that also covers npm.
+  const notes = facts.flatMap((f) => (f.notes ?? []).map((n) => `${f.ecosystem}: ${n}`))
+  const plan = buildPlan({ updates, config, alerts, unmanageable, capabilities, notes })
 
   process.stdout.write(`${JSON.stringify(plan, null, 2)}\n`)
 }
