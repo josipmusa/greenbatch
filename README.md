@@ -43,11 +43,23 @@ say 5.0.0 is pure ESM and 6.0.0 requires Node 22, and this package is CommonJS
 declaring `engines.node: ">=20"` - so the PR carries a migration note instead of
 a failed attempt.
 
-<!-- TODO: screenshot of the PR body - the updates table, the reverted prettier
-     row with its gate output, and the chalk migration note. -->
+<details>
+<summary><strong>The pull request it opened</strong> - the updates table, the revert with
+its gate log, and the migration note it wrote instead of attempting
+<code>chalk</code>.</summary>
+
+<img src="docs/images/pr-body.png" alt="The greenbatch pull request body on GitHub: a
+table of six updates marked kept, reverted, and skipped; the prettier revert with the
+prettier --check output that failed; the chalk migration note citing pure ESM and the
+Node 22 requirement; and a run cost of 8 gate runs against a budget of 30.">
+
+</details>
 
 Dependabot's answer to the same repository, on the same day, was six separate
 pull requests.
+
+![Seven open pull requests on the same repository: one from greenbatch carrying every
+verified update, and six from Dependabot, one per package.](docs/images/pr-list.png)
 
 ## How it is different
 
