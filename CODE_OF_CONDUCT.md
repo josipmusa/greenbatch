@@ -32,7 +32,10 @@ messages - and when you are representing the project elsewhere.
 
 ## Enforcement
 
-Report anything concerning to **josip.musa42@gmail.com**. Reports stay confidential.
+This project has no private contact address. Harassment or abuse by a GitHub account can
+be reported to GitHub through their
+[report abuse form](https://github.com/contact/report-abuse). Please do not open a public
+issue about a specific person.
 
 Maintainers are responsible for clarifying these standards and will take action they
 judge appropriate and fair, from a warning through to a permanent ban. Maintainers who
