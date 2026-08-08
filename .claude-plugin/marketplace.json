@@ -1,0 +1,16 @@
+{
+  "name": "greenbatch",
+  "version": "0.1.0",
+  "description": "Marketplace for the greenbatch dependency-update skill: one verified branch and 1-2 PRs per run, instead of one PR and one full CI pipeline per package.",
+  "owner": {
+    "name": "greenbatch contributors"
+  },
+  "plugins": [
+    {
+      "name": "greenbatch",
+      "source": "./",
+      "version": "0.1.0",
+      "description": "Tiered, gated, bisected dependency updates for npm and Maven. One verified branch and one PR per target branch, with a report of what was kept, reverted, and skipped - and what was deliberately not taken."
+    }
+  ]
+}

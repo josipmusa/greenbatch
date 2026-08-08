@@ -1,0 +1,17 @@
+{
+  "name": "greenbatch",
+  "version": "0.1.0",
+  "description": "One verified dependency-update branch per run instead of Dependabot's per-package PR flood. Discovers every available npm and Maven update, applies it in risk-tiered batches on a dedicated branch, verifies each batch with the repo's own build+test gate, bisects failures to revert only what breaks, and opens one PR per target branch with a report of what was kept, reverted, and skipped. Deterministic scripts do the mechanical work; the agent reads changelogs, diagnoses failures, and writes the report.",
+  "keywords": [
+    "dependencies",
+    "dependency-updates",
+    "dependabot",
+    "renovate",
+    "npm",
+    "maven",
+    "security"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/OWNER/greenbatch",
+  "repository": "https://github.com/OWNER/greenbatch"
+}
