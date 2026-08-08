@@ -15,8 +15,39 @@ why, and what it deliberately did not touch.
 It is a [Claude Code](https://claude.com/claude-code) skill. It runs interactively or
 headless on a schedule. It never merges anything.
 
-<!-- TODO: demo GIF of a full run - discovery, tier-1 batch gate, a bisect, PR opened. -->
-<!-- TODO: screenshot of a real PR body, showing the updates table and a reverted entry. -->
+## A real run
+
+Against a small repository with six out-of-date dependencies and a gate of
+`npm ci && prettier --check . && node --test`. Six updates found, four kept, one
+reverted, one never attempted.
+
+The tier-1 batch failed, so the run bisected it:
+
+```
+gate 1   (untouched branch, nothing applied)          PASS
+gate 2   marked, prettier, semver, slugify, yaml      FAIL   the tier-1 batch
+gate 3   marked, prettier, semver                     FAIL   split
+gate 4   marked, prettier                             FAIL   split
+gate 5   marked                                       PASS   kept
+gate 6   prettier                                     FAIL   culprit, reverted
+gate 7   semver                                       PASS   kept
+gate 8   slugify, yaml                                PASS   kept
+```
+
+`prettier` 3.1.0 changed how nested ternaries are indented, so the bumped
+formatter rejects a file the pinned one had formatted. Four updates ship
+verified; the fifth is reported with the gate output that condemned it.
+
+`chalk` 4 → 6 was skipped without spending a gate run at all. Its release notes
+say 5.0.0 is pure ESM and 6.0.0 requires Node 22, and this package is CommonJS
+declaring `engines.node: ">=20"` - so the PR carries a migration note instead of
+a failed attempt.
+
+<!-- TODO: screenshot of the PR body - the updates table, the reverted prettier
+     row with its gate output, and the chalk migration note. -->
+
+Dependabot's answer to the same repository, on the same day, was six separate
+pull requests.
 
 ## How it is different
 
@@ -106,6 +137,32 @@ Grouping inside an ecosystem needs no config: the npm adapter already treats a s
 scope, and a package with its `@types` stub, as one atomic element.
 
 ## How a run goes
+
+```mermaid
+flowchart TD
+    P["Preflight<br/>clean tree · fetch · cut deps/YYYY-MM-DD from origin/base"]
+    P --> CG{"Gate the untouched branch"}
+    CG -->|"red"| AB["Abort: the base is broken,<br/>so no later failure could be attributed"]
+    CG -->|"green"| DP["Discover · tier · plan"]
+
+    DP --> T1["Tier 1: patch + minor<br/>apply all, gate once"]
+    T1 -->|"green"| T1K["Commit what passed"]
+    T1 -->|"red"| BI["Bisect<br/>split, gate each half"]
+    BI --> T1K
+    BI --> RV["Revert the culprit<br/>keep its gate log"]
+
+    T1K --> T2["Tier 2: majors, one at a time"]
+    RV --> T2
+    T2 --> CL{"Changelog read first:<br/>attemptable?"}
+    CL -->|"needs code migration"| SK["Skip with a migration note<br/>no gate run spent"]
+    CL -->|"yes"| AT["Apply · gate · commit or revert"]
+
+    SK --> AU["Transitive pass<br/>npm audit fix, gated like everything else"]
+    AT --> AU
+    AU --> PR["Push the deps branch<br/>one PR per target"]
+    PR --> RS["Restore your branch<br/>write the report"]
+    AB --> RS
+```
 
 1. **Preflight.** Abort on a dirty tree. Record the current branch. Read and validate the
    config. Fetch. Close superseded PRs from previous runs - only ones with a dated
