@@ -145,27 +145,27 @@ package with its `@types` stub, as one atomic element.
 
 ```mermaid
 flowchart TD
-    P["Preflight<br/>clean tree · fetch · cut deps/YYYY-MM-DD from origin/base"]
+    P["Preflight <br/>clean tree · fetch · cut deps/YYYY-MM-DD from origin/base"]
     P --> CG{"Gate the untouched branch"}
-    CG -->|"red"| AB["Abort: the base is broken,<br/>so no later failure could be attributed"]
+    CG -->|"red"| AB["Abort: the base is broken, <br/>so no later failure could be attributed"]
     CG -->|"green"| DP["Discover · tier · plan"]
 
-    DP --> T1["Tier 1: patch + minor<br/>apply all, gate once"]
+    DP --> T1["Tier 1: patch + minor <br/>apply all, gate once"]
     T1 -->|"green"| T1K["Commit what passed"]
-    T1 -->|"red"| BI["Bisect<br/>split, gate each half"]
+    T1 -->|"red"| BI["Bisect <br/>split, gate each half"]
     BI --> T1K
-    BI --> RV["Revert the culprit<br/>keep its gate log"]
+    BI --> RV["Revert the culprit <br/>keep its gate log"]
 
     T1K --> T2["Tier 2: majors, one at a time"]
     RV --> T2
-    T2 --> CL{"Changelog read first:<br/>attemptable?"}
-    CL -->|"needs code migration"| SK["Skip with a migration note<br/>no gate run spent"]
+    T2 --> CL{"Changelog read first: <br/>attemptable?"}
+    CL -->|"needs code migration"| SK["Skip with a migration note <br/>no gate run spent"]
     CL -->|"yes"| AT["Apply · gate · commit or revert"]
 
-    SK --> AU["Transitive pass<br/>npm audit fix, gated like everything else"]
+    SK --> AU["Transitive pass <br/>npm audit fix, gated like everything else"]
     AT --> AU
-    AU --> PR["Push the deps branch<br/>one PR per target"]
-    PR --> RS["Restore your branch<br/>write the report"]
+    AU --> PR["Push the deps branch <br/>one PR per target"]
+    PR --> RS["Restore your branch <br/>write the report"]
     AB --> RS
 ```
 
