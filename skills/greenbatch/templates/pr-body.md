@@ -123,6 +123,7 @@ dependency in an unscanned corner looks current when nobody ever checked it.>
 - Lockfile conflict on merge into `dev` was resolved by regenerating; the gate was re-run green on the derived branch.
 - A root `greenbatch.yml` exists but `.claude/greenbatch.yml` took precedence.
 - Left alone: `deps/fix-lockfile` (#41) matches no run of this skill and was not closed.
+- Created the `dependencies` label on this repository - the config asks for it and it did not exist.
 
 <!-- greenbatch-run: <YYYY-MM-DD> -->
 

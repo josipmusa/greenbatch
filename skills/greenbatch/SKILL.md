@@ -275,6 +275,26 @@ Write PR bodies from `templates/pr-body.md`, filled from the run's actual record
 plan, the apply output, and the saved gate logs. Never describe an update you did not
 verify against those.
 
+**Open the PR first, then label it. Never pass `--label` to `gh pr create`.** That flag
+fails the entire creation when the label does not exist on the repo, so a run that
+discovered, gated, bisected, and pushed correctly ends with no PR at all - and a
+repository that has never had a dependency bot on it has no `dependencies` label, which
+makes this the *default* outcome on a first run rather than an edge case.
+
+```bash
+gh pr create --base <target> --head <branch> --title "..." --body-file <body>   # no --label
+gh label create <name> --color 0366d6 --description "Dependency updates"        # only if missing
+gh pr edit <url> --add-label <name>
+```
+
+Creating a missing label is honouring the config, not exceeding it - `labels` is the
+user asking for exactly this - but say so in the report's **Notes**, because it is a
+change to their repository's settings that they did not watch happen.
+
+If labelling fails anyway, **leave the PR alone and note it**. The PR is the deliverable
+and it already exists; a missing label is a line in the report, not a failed run. Never
+delete and recreate a PR to fix its labels.
+
 **Report-only mode.** If `gh` is missing, unauthenticated, or the remote is not GitHub,
 do not try to work around it. Push nothing beyond the `deps/*` branches you already
 created, and print the branch names plus the complete, ready-to-paste PR bodies in the
@@ -383,3 +403,9 @@ report-only mode looks like when no token is present.
 - **A Maven update never appears** - it is probably in `unmanageable`: pinned by the
   parent or an imported BOM, with no lever short of overriding the parent's tested
   version set. Report it as such; do not add a version override to force it.
+- **`gh pr create` exits non-zero with `could not add label`** - the label in the config
+  does not exist on the repo, and no PR was created. Do not retry the same command and
+  do not drop the branch: the branch is pushed and the work is intact. Create the label,
+  then create the PR without `--label` as step 7 describes. Check with
+  `gh pr list --head <branch>` before retrying, so a partially-succeeded creation does
+  not become two PRs for one branch.
