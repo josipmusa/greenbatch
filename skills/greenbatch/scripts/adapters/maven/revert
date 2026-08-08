@@ -6,10 +6,21 @@
 # enough for the next gate to run against a tree that matches the manifest.
 #
 # Usage: revert [repo-dir]
+#
+# `git checkout HEAD --` rather than `git checkout --`: the latter restores from
+# the index, so anything the run had already staged would survive a revert and
+# ride into the next batch as if it had passed the gate.
 set -euo pipefail
 
 cd "${1:-.}"
 
-# shellcheck disable=SC2046  # word splitting is the point: one arg per pom
-git checkout -- $(git ls-files '*pom.xml' 'pom.xml')
+poms=$(git ls-files '*pom.xml' 'pom.xml')
+
+# An empty list makes `git checkout HEAD --` restore the ENTIRE tree, so the
+# no-pom case is handled rather than expanded into a whole-repo reset.
+if [ -n "$poms" ]; then
+  # shellcheck disable=SC2086  # word splitting is the point: one arg per pom
+  git checkout HEAD -- $poms
+fi
+
 find . -name 'pom.xml.versionsBackup' -delete

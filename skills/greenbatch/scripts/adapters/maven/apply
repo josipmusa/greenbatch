@@ -65,3 +65,67 @@ if [ "$before" = "$after" ]; then
   echo "maven/apply: pom.xml unchanged - wrong lever or no match for: ${specs[*]}" >&2
   exit 4
 fi
+
+# Report what the pom NOW says, read back out of the file rather than echoed
+# from the element ids. A goal that reports success while writing a different
+# version - or writing nothing for one id in a multi-element batch - is exactly
+# the kind of silent drift the report must never inherit. Conformance asserts
+# these versions match what discovery offered.
+IDS="${specs[*]}" python3 - pom.xml <<'PY'
+import json, os, re, sys
+import xml.etree.ElementTree as ET
+
+NS = {"m": "http://maven.apache.org/POM/4.0.0"}
+root = ET.parse(sys.argv[1]).getroot()
+
+
+def text(node, tag):
+    child = node.find(f"m:{tag}", NS)
+    return child.text.strip() if child is not None and child.text else None
+
+
+properties = {}
+props = root.find("m:properties", NS)
+if props is not None:
+    for node in props:
+        name = re.sub(r"^\{.*\}", "", node.tag)
+        properties[name] = (node.text or "").strip()
+
+declared = {}
+for xpath in (
+    "m:dependencies/m:dependency",
+    "m:dependencyManagement/m:dependencies/m:dependency",
+    "m:build/m:plugins/m:plugin",
+    "m:build/m:pluginManagement/m:plugins/m:plugin",
+):
+    for node in root.findall(xpath, NS):
+        artifact = text(node, "artifactId")
+        if artifact:
+            declared.setdefault(f"{text(node, 'groupId')}:{artifact}", text(node, "version"))
+
+parent = root.find("m:parent", NS)
+parent_version = text(parent, "version") if parent is not None else None
+
+
+def resolve(version):
+    """A ${property} reference read back through the properties block."""
+    if not version:
+        return None
+    m = re.fullmatch(r"\$\{(.+)\}", version.strip())
+    return properties.get(m.group(1)) if m else version.strip()
+
+
+applied = []
+for spec in os.environ["IDS"].split():
+    if spec.startswith("property:"):
+        name = spec[len("property:") :].split("=", 1)[0]
+        applied.append({"id": spec, "name": name, "to": properties.get(name)})
+    elif spec.startswith("dependency:"):
+        ga = spec[len("dependency:") :].split("=", 1)[0]
+        applied.append({"id": spec, "name": ga, "to": resolve(declared.get(ga))})
+    elif spec.startswith("parent="):
+        name = f"{text(parent, 'groupId')}:{text(parent, 'artifactId')}" if parent is not None else "parent"
+        applied.append({"id": spec, "name": name, "to": parent_version})
+
+print(json.dumps({"applied": applied}, indent=2))
+PY

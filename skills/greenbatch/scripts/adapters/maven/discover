@@ -25,6 +25,59 @@ MVN="./mvnw"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
+# The versions plugin happily offers release candidates as the newest version,
+# and it offers only ONE - so an alpha does not merely add noise, it hides the
+# stable release behind it. On this repository's own fixture, slf4j-api reported
+# 2.0.0 -> 2.1.0-alpha1 (correctly flagged prerelease, correctly never applied)
+# while stable 2.0.18 went unmentioned, and the report read as "up to date".
+# Filtering at the source makes the plugin offer the newest STABLE version.
+#
+# `(?i)` is an inline Java regex flag; the property is a comma-separated list of
+# patterns matched against the whole version. is_prerelease() below stays as a
+# backstop for anything these miss.
+#
+# Tradeoff worth knowing: an artifact whose only newer version is a prerelease
+# is now absent from the facts entirely rather than listed in the `prerelease`
+# bucket. Surfacing both would mean running every goal twice, which doubles the
+# slowest part of discovery to report something the run would never apply.
+IGNORED_VERSIONS='(?i).*-alpha.*,(?i).*-beta.*,(?i).*-rc.*,(?i).*-cr.*,(?i).*-m[0-9]+,(?i).*-milestone.*,(?i).*-preview.*,(?i).*-snapshot.*,(?i).*\.rc[0-9]+,(?i).*\.m[0-9]+,(?i).*\.cr[0-9]+'
+
+# What the root pom is: does it have a parent to bump, and is it an aggregator?
+probe=$(python3 - pom.xml <<'PY'
+import sys, xml.etree.ElementTree as ET
+
+NS = {"m": "http://maven.apache.org/POM/4.0.0"}
+root = ET.parse(sys.argv[1]).getroot()
+
+print("parent=" + ("yes" if root.find("m:parent", NS) is not None else "no"))
+print("modules=" + ",".join(m.text.strip() for m in root.findall("m:modules/m:module", NS) if m.text))
+PY
+) || { echo "maven/discover: could not read pom.xml" >&2; exit 2; }
+
+# Keyed lines rather than positional ones: an empty modules list makes the second
+# line blank, and positional parsing silently returns the first line for it.
+has_parent=no
+modules=
+while IFS= read -r line; do
+  case "$line" in
+    parent=*) has_parent="${line#parent=}" ;;
+    modules=*) modules="${line#modules=}" ;;
+  esac
+done <<EOF
+$probe
+EOF
+
+# Multi-module: the goals run over the whole reactor, but only the root pom is
+# parsed below to work out which lever controls each artifact. A child module's
+# dependency therefore looks version-less and would be reported as
+# `unmanageable` - "pinned by a parent or BOM" - which is confidently false. `-N`
+# keeps the goals and the parse describing the same pom, and the caveat is
+# reported rather than left for the reader to discover.
+scope_args=()
+if [ -n "$modules" ]; then
+  scope_args=(-N)
+fi
+
 # The user property is `versions.outputFile`, NOT `outputFile`. With the wrong
 # name these goals exit 0 and write nothing at all.
 #
@@ -34,7 +87,8 @@ run_goal() {
   local goal="$1" out="$2"
   shift 2
   if ! "$MVN" -B -q "${VERSIONS_PLUGIN}:${goal}" \
-    -Dversions.outputFile="$out" "$@" >"$work/$goal.log" 2>&1; then
+    -Dversions.outputFile="$out" -Dmaven.version.ignore="$IGNORED_VERSIONS" \
+    "${scope_args[@]}" "$@" >"$work/$goal.log" 2>&1; then
     echo "maven/discover: $goal failed:" >&2
     tail -20 "$work/$goal.log" >&2
     return 2
@@ -47,21 +101,18 @@ run_goal display-dependency-updates "$work/deps.txt" \
   -DprocessDependencyManagementTransitive=false
 
 # display-parent-updates errors out on a pom with no <parent>, which is a normal
-# single-module layout rather than a failure. Ask the pom first.
+# single-module layout rather than a failure. The probe above asked first.
 : >"$work/parent.txt"
-if python3 -c '
-import sys, xml.etree.ElementTree as ET
-NS = {"m": "http://maven.apache.org/POM/4.0.0"}
-sys.exit(0 if ET.parse("pom.xml").getroot().find("m:parent", NS) is not None else 1)
-'; then
+if [ "$has_parent" = "yes" ]; then
   run_goal display-parent-updates "$work/parent.txt"
 fi
 
-python3 - "$work/props.txt" "$work/parent.txt" "$work/deps.txt" pom.xml <<'PY'
+python3 - "$work/props.txt" "$work/parent.txt" "$work/deps.txt" pom.xml "$modules" <<'PY'
 import json, re, sys
 import xml.etree.ElementTree as ET
 
-props_file, parent_file, deps_file, pom_file = sys.argv[1:5]
+props_file, parent_file, deps_file, pom_file, modules_csv = sys.argv[1:6]
+modules = [m for m in modules_csv.split(",") if m]
 
 # The reports pad names with dot runs: "${archunit.version} ....... 1.4.2 -> 1.5.0"
 UPDATE = re.compile(r"^\s*(?P<name>\S+)\s+(?P<from>[^\s>]+)\s*->\s*(?P<to>\S+)\s*$")
@@ -238,6 +289,17 @@ for ga, (frm, to) in sorted(parent_updates.items()):
     # tells core to keep it out of the tier-1 batch whatever its bump says.
     updates.append(fact(f"parent={to}", ga, frm, to, "parent", risky=True))
 
+# Caveats about the SCOPE of this discovery, as opposed to individual updates a
+# run cannot make. A reader who is not told the child modules went unscanned
+# reads the report as covering the whole project.
+notes = []
+if modules:
+    notes.append(
+        "multi-module project: discovery scanned the root pom only; "
+        f"{len(modules)} child module(s) ({', '.join(sorted(modules))}) were not scanned. "
+        "Dependencies declared in those modules are neither reported nor updated."
+    )
+
 # Maven has no lockfile and no transitive audit pass, so it declares neither
 # capability and core budgets no audit gate run for it.
 print(
@@ -247,6 +309,7 @@ print(
             "capabilities": [],
             "updates": updates,
             "unmanageable": unmanageable,
+            "notes": notes,
         },
         indent=2,
     )
