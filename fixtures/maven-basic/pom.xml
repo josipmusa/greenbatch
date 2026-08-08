@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Conformance fixture: a single-module pom with no parent, exercising both Maven
+  levers at once.
+
+  - commons-lang3's version is a ${property} reference, so it only moves via
+    versions:set-property.
+  - slf4j-api carries a literal <version>, so it only moves via
+    versions:use-dep-version.
+
+  Both are pinned deliberately behind their latest releases. Neither is ever
+  compiled against: the conformance run only edits and reverts the pom.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>dev.greenbatch.fixtures</groupId>
+  <artifactId>maven-basic</artifactId>
+  <version>0.0.1-SNAPSHOT</version>
+  <packaging>jar</packaging>
+
+  <name>greenbatch maven-basic fixture</name>
+
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <maven.compiler.release>17</maven.compiler.release>
+    <commons-lang3.version>3.12.0</commons-lang3.version>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-lang3</artifactId>
+      <version>${commons-lang3.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+      <version>2.0.0</version>
+    </dependency>
+  </dependencies>
+</project>

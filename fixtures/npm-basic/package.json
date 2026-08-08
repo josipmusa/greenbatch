@@ -1,0 +1,14 @@
+{
+  "name": "greenbatch-fixture-npm-basic",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Conformance fixture: two zero-dependency packages pinned deliberately behind their latest releases.",
+  "license": "MIT",
+  "scripts": {
+    "verify": "node verify.js"
+  },
+  "dependencies": {
+    "ms": "2.0.0",
+    "escape-string-regexp": "4.0.0"
+  }
+}
