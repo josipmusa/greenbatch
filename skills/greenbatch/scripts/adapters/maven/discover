@@ -83,12 +83,18 @@ fi
 #
 # processDependencyManagementTransitive=false keeps imported BOMs out of the
 # dependency report - hundreds of managed versions this run has no lever for.
+#
+# scope_args is expanded as `${a[@]+"${a[@]}"}`, not a plain `"${a[@]}"`: bash
+# 3.2 - which macOS still ships as /bin/bash, and which `env bash` finds there
+# unless a newer one is installed - treats an empty array as unset under `set
+# -u` and aborts the script. Single-module poms leave it empty, and that is the
+# layout this adapter is built for, so the plain form fails the common case.
 run_goal() {
   local goal="$1" out="$2"
   shift 2
   if ! "$MVN" -B -q "${VERSIONS_PLUGIN}:${goal}" \
     -Dversions.outputFile="$out" -Dmaven.version.ignore="$IGNORED_VERSIONS" \
-    "${scope_args[@]}" "$@" >"$work/$goal.log" 2>&1; then
+    ${scope_args[@]+"${scope_args[@]}"} "$@" >"$work/$goal.log" 2>&1; then
     echo "maven/discover: $goal failed:" >&2
     tail -20 "$work/$goal.log" >&2
     return 2
