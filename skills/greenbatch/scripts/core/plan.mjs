@@ -120,7 +120,10 @@ export function buildPlan({
   }
 
   const { find, union } = unionFind(kept.length)
-  const explicitName = new Map() // root index -> config group name
+  // [any member index, config group name]. Deliberately not keyed by root: a
+  // later group can union two sets together and change what `find` returns, so
+  // a root recorded now is not a stable key. The member index is.
+  const explicitNames = []
 
   // 1. Explicit config groups - the only rule that crosses ecosystems, and the
   //    only one core owns.
@@ -130,7 +133,7 @@ export function buildPlan({
       .filter((i) => i >= 0)
     if (members.length === 0) continue
     for (const i of members.slice(1)) union(members[0], i)
-    explicitName.set(find(members[0]), name)
+    explicitNames.push([members[0], name])
   }
 
   // 2. Adapter-supplied families. Whichever relationships an ecosystem considers
@@ -147,13 +150,29 @@ export function buildPlan({
     else byFamily.set(key, i)
   })
 
-  // Explicit names must survive any merge that happened after step 1.
+  // Explicit names must survive any merge that happened after step 1. Two
+  // config groups sharing a package really are one atomic element - the bisect
+  // cannot split them - but naming the result after whichever group came first
+  // in the object would credit one group in the PR table for reverting packages
+  // the reader can only find under the other. Both names, sorted, so the label
+  // does not depend on key order.
   const namesByRoot = new Map()
-  for (const [root, name] of explicitName) {
-    const current = find(root)
-    if (!namesByRoot.has(current)) namesByRoot.set(current, name)
+  for (const [member, name] of explicitNames) {
+    const current = find(member)
+    if (!namesByRoot.has(current)) namesByRoot.set(current, new Set())
+    namesByRoot.get(current).add(name)
   }
+  const labelByRoot = new Map(
+    [...namesByRoot].map(([root, names]) => [root, [...names].sort().join('+')]),
+  )
 
+  // Matched by package name alone, deliberately, even though alerts carry an
+  // ecosystem. The two sides name ecosystems differently (GitHub says `maven`
+  // for what an adapter may call something else), and the failure directions are
+  // not symmetric: a false match only moves an update earlier in tier 2, while a
+  // miss silently drops the security ordering from a vulnerable package. Name
+  // collisions across ecosystems are rare; a missed alert is not worth avoiding
+  // them.
   const alertedPackages = new Set(alerts.map((a) => a.package))
 
   const sets = new Map()
@@ -164,7 +183,7 @@ export function buildPlan({
   })
 
   const elements = [...sets.entries()].map(([root, members]) => {
-    const explicit = namesByRoot.get(root)
+    const explicit = labelByRoot.get(root)
     const grouped = explicit !== undefined || members.length > 1
 
     // A family only earns the label once it actually groups several packages;
@@ -211,15 +230,17 @@ export function buildPlan({
     )
 
   // One clean-branch gate, one tier-1 batch gate (if there is a batch), one per
-  // tier-2 element, and one pass per audit-capable ecosystem. A tier-1 bisect
-  // adds runs beyond this, which is why the estimate is a floor and tier 1 is
-  // never budget-capped.
+  // tier-2 element, one pass per audit-capable ecosystem, and one per derived
+  // target branch - each of those is cut from its own target, merged, and
+  // re-gated. A tier-1 bisect adds runs beyond this, which is why the estimate
+  // is a floor and tier 1 is never budget-capped.
   const maxGateRuns = config.maxGateRuns ?? 30
   const estimatedGateRuns =
     1 +
     (tier1.length > 0 ? 1 : 0) +
     tier2.length +
-    (capabilities.includes('audit') ? 1 : 0)
+    (capabilities.includes('audit') ? 1 : 0) +
+    (config.derivedTargets ?? 0)
 
   return {
     tier1,
@@ -243,33 +264,90 @@ export function buildPlan({
 
 // ---------------------------------------------------------------- CLI
 
-function parseArgs(argv) {
-  const out = { discover: [], config: null, alerts: null }
-  for (let i = 0; i < argv.length; i += 2) {
-    const [flag, value] = [argv[i], argv[i + 1]]
+export const USAGE = `usage: plan.mjs --config <config.json> --discover <facts.json> [--discover <facts.json>...]
+                [--alerts <alerts.json>]
+
+Turns adapter facts and a normalized config into a tiered, grouped plan on stdout.
+
+  --config    normalized config, as printed by scripts/core/config.mjs
+  --discover  facts JSON from one adapter's discover; repeat for each ecosystem
+  --alerts    open Dependabot alerts, as printed by scripts/core/alerts.sh
+  --help      this message
+
+Exit: 0 planned; 2 bad arguments or unreadable input.`
+
+/** Argument vector -> options. Throws with a readable message; never exits. */
+export function parseArgs(argv) {
+  const out = { discover: [], config: null, alerts: null, help: false }
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const flag = argv[i]
+
+    if (flag === '--help' || flag === '-h') {
+      out.help = true
+      continue
+    }
+
+    if (!['--discover', '--config', '--alerts'].includes(flag)) {
+      throw new Error(`unknown argument ${flag}`)
+    }
+
+    // Reading past the end used to hand `undefined` to readFile, which surfaced
+    // as 'The "path" argument must be of type string' - a stack trace about
+    // Node's internals rather than about the command that was typed.
+    const value = argv[i + 1]
+    if (value === undefined || value.startsWith('--')) {
+      throw new Error(`${flag} needs a value`)
+    }
+    i += 1
+
     if (flag === '--discover') out.discover.push(value)
     else if (flag === '--config') out.config = value
-    else if (flag === '--alerts') out.alerts = value
-    else {
-      process.stderr.write(`plan.mjs: unknown argument ${flag}\n`)
-      process.exit(2)
-    }
+    else out.alerts = value
   }
+
   return out
 }
 
 async function main(argv) {
   const { readFile } = await import('node:fs/promises')
-  const args = parseArgs(argv)
 
-  if (!args.config || args.discover.length === 0) {
-    process.stderr.write(
-      'usage: plan.mjs --config <normalized.json> --discover <facts.json> [--discover ...] [--alerts <alerts.json>]\n',
-    )
+  let args
+  try {
+    args = parseArgs(argv)
+  } catch (err) {
+    process.stderr.write(`plan.mjs: ${err.message}\n\n${USAGE}\n`)
     process.exit(2)
   }
 
-  const readJson = async (path) => JSON.parse(await readFile(path, 'utf8'))
+  if (args.help) {
+    process.stdout.write(`${USAGE}\n`)
+    return
+  }
+
+  if (!args.config || args.discover.length === 0) {
+    process.stderr.write(`plan.mjs: --config and at least one --discover are required\n\n${USAGE}\n`)
+    process.exit(2)
+  }
+
+  const readJson = async (path) => {
+    let raw
+    try {
+      raw = await readFile(path, 'utf8')
+    } catch (err) {
+      process.stderr.write(`plan.mjs: cannot read ${path}: ${err.code ?? err.message}\n`)
+      process.exit(2)
+    }
+    try {
+      return JSON.parse(raw)
+    } catch (err) {
+      // The usual cause is an upstream script that printed nothing at all.
+      const hint = raw.trim() === '' ? ' (the file is empty)' : ''
+      process.stderr.write(`plan.mjs: ${path} is not valid JSON${hint}: ${err.message}\n`)
+      process.exit(2)
+    }
+  }
+
   const config = await readJson(args.config)
   const facts = await Promise.all(args.discover.map(readJson))
   const alerts = args.alerts ? await readJson(args.alerts) : []

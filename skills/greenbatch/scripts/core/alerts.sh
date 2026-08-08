@@ -15,7 +15,16 @@
 set -uo pipefail
 
 repo="${1:-.}"
-cd "$repo" || exit 0
+
+# Every other failure path here prints `[]`, and this one must too. Exiting 0
+# with empty stdout is not "no alerts" to the next script in the pipeline, it is
+# a truncated file: plan.mjs died on `Unexpected end of JSON input` and the whole
+# run stopped over an enrichment that is allowed to be missing.
+if ! cd "$repo" 2>/dev/null; then
+  echo "alerts.sh: cannot enter '$repo' - skipping security cross-reference." >&2
+  echo '[]'
+  exit 0
+fi
 
 if ! command -v gh >/dev/null 2>&1; then
   echo "alerts.sh: gh not on PATH - skipping security cross-reference." >&2

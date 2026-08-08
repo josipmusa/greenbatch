@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { buildPlan } from '../scripts/core/plan.mjs'
+import { buildPlan, parseArgs } from '../scripts/core/plan.mjs'
 
 // Facts as an adapter would emit them. `family` is what makes two updates one
 // atomic element; core never derives it, so the tests state it explicitly.
@@ -608,4 +608,90 @@ test('a plan with nothing to caveat still carries an empty notes list', () => {
   const plan = buildPlan({ updates: [], config: config() })
 
   assert.deepEqual(plan.notes, [])
+})
+
+// ------------------------------------------------- derived target branches
+
+test('every target beyond the base costs a gate run in the estimate', () => {
+  // Each non-base target gets a derived branch, and that branch is re-gated
+  // after the merge. Leaving those out made the estimate quietly optimistic on
+  // exactly the repos most likely to be near their budget.
+  const plan = buildPlan({
+    updates: [npm('zod', '3.22.0', '3.24.0')],
+    config: config({ derivedTargets: 2 }),
+  })
+
+  // 1 clean gate + 1 tier-1 batch + 2 derived-branch re-gates
+  assert.equal(plan.estimatedGateRuns, 4)
+})
+
+test('a single-target run budgets no derived-branch gates', () => {
+  const plan = buildPlan({
+    updates: [npm('zod', '3.22.0', '3.24.0')],
+    config: config({ derivedTargets: 0 }),
+  })
+
+  assert.equal(plan.estimatedGateRuns, 2)
+})
+
+// --------------------------------------------------------- merged groups
+
+test('config groups joined by a shared member merge under a name that says so', () => {
+  // They really are one atomic element - the bisect cannot split them - so the
+  // merge is right. Naming the result after whichever group happened to be
+  // first in the object was not: the PR table would credit one group for
+  // reverting packages the reader can only find in the other.
+  const plan = buildPlan({
+    updates: [
+      npm('react', '1.0.0', '1.0.1'),
+      npm('react-dom', '1.0.0', '1.0.1'),
+      npm('shared-dep', '1.0.0', '1.0.1'),
+    ],
+    config: config({
+      groups: { ui: ['react', 'shared-dep'], core: ['react-dom', 'shared-dep'] },
+    }),
+  })
+
+  assert.equal(plan.tier1.length, 1)
+  assert.equal(plan.tier1[0].label, 'core+ui')
+  assert.deepEqual(
+    plan.tier1[0].members.map((m) => m.name),
+    ['react', 'react-dom', 'shared-dep'],
+  )
+})
+
+test('groups that do not overlap keep their own names', () => {
+  const plan = buildPlan({
+    updates: [npm('react', '1.0.0', '1.0.1'), npm('vite', '1.0.0', '1.0.1')],
+    config: config({ groups: { ui: ['react'], build: ['vite'] } }),
+  })
+
+  assert.deepEqual(
+    plan.tier1.map((e) => e.label),
+    ['build', 'ui'],
+  )
+})
+
+// ------------------------------------------------------------ CLI arguments
+
+test('parseArgs collects repeated --discover flags', () => {
+  const args = parseArgs(['--config', 'c.json', '--discover', 'a.json', '--discover', 'b.json'])
+
+  assert.equal(args.config, 'c.json')
+  assert.deepEqual(args.discover, ['a.json', 'b.json'])
+})
+
+test('parseArgs recognises --help on its own', () => {
+  assert.equal(parseArgs(['--help']).help, true)
+  assert.equal(parseArgs(['-h']).help, true)
+})
+
+test('a flag with no value is named, not turned into a stack trace', () => {
+  // This used to surface as: The "path" argument must be of type string.
+  assert.throws(() => parseArgs(['--config']), /--config needs a value/)
+  assert.throws(() => parseArgs(['--config', 'c.json', '--discover']), /--discover needs a value/)
+})
+
+test('an unknown flag is named', () => {
+  assert.throws(() => parseArgs(['--discovery', 'a.json']), /--discovery/)
 })
