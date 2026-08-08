@@ -3,7 +3,19 @@ import assert from 'node:assert/strict'
 
 import rules from '../scripts/adapters/npm/rules.cjs'
 
-const { assignFamilies, buildUpdates, isPrerelease, npmScope, semverBump, typesBaseOf } = rules
+const {
+  applyVersions,
+  assignFamilies,
+  buildUpdates,
+  declaredVersion,
+  detectIndent,
+  isPrerelease,
+  npmScope,
+  parseElementId,
+  rangePrefix,
+  semverBump,
+  typesBaseOf,
+} = rules
 
 const update = (name) => ({ name })
 const familiesOf = (names) => {
@@ -135,11 +147,27 @@ test('buildUpdates pairs the declared range with the offered one', () => {
   )
 })
 
-test('buildUpdates makes the element id the package name', () => {
+test('buildUpdates puts the target version in the element id', () => {
+  // The id carries the version so `apply` pins exactly what was discovered and
+  // reported, instead of re-resolving `latest` and silently taking a release
+  // that landed mid-run.
   const updates = buildUpdates({ dependencies: { zod: '3.22.0' } }, { zod: '3.24.0' })
 
-  assert.equal(updates[0].id, 'zod')
+  assert.equal(updates[0].id, 'zod@3.24.0')
   assert.equal(updates[0].mechanism, 'npm')
+})
+
+test('a scoped package still gets a round-trippable element id', () => {
+  const updates = buildUpdates(
+    { dependencies: { '@types/node': '^20.1.0' } },
+    { '@types/node': '^20.19.0' },
+  )
+
+  assert.equal(updates[0].id, '@types/node@20.19.0')
+  assert.deepEqual(parseElementId(updates[0].id), {
+    name: '@types/node',
+    version: '20.19.0',
+  })
 })
 
 test('buildUpdates skips a package the manifest does not declare', () => {
@@ -182,4 +210,93 @@ test('buildUpdates flags a prerelease target', () => {
   const updates = buildUpdates({ dependencies: { pkg: '1.2.3' } }, { pkg: '1.3.0-rc1' })
 
   assert.equal(updates[0].prerelease, true)
+})
+
+// -------------------------------------------------------- element ids
+
+test('parseElementId splits a plain name from its version', () => {
+  assert.deepEqual(parseElementId('zod@3.24.0'), { name: 'zod', version: '3.24.0' })
+})
+
+test('parseElementId splits on the last @, so scopes survive', () => {
+  assert.deepEqual(parseElementId('@mantine/core@9.5.1'), {
+    name: '@mantine/core',
+    version: '9.5.1',
+  })
+})
+
+test('parseElementId rejects an id carrying no version', () => {
+  // A bare name would send `apply` back to re-resolving latest, which is the
+  // exact failure the versioned id exists to prevent.
+  assert.equal(parseElementId('zod'), null)
+  assert.equal(parseElementId('@types/node'), null)
+  assert.equal(parseElementId('zod@'), null)
+  assert.equal(parseElementId(''), null)
+})
+
+// ------------------------------------------------------ range operators
+
+test('rangePrefix keeps whatever operator the manifest declared', () => {
+  assert.equal(rangePrefix('^9.5.1'), '^')
+  assert.equal(rangePrefix('~3.22.0'), '~')
+  assert.equal(rangePrefix('>=1.2.3'), '>=')
+  assert.equal(rangePrefix('4.6.0'), '')
+})
+
+test('rangePrefix and bareVersion round-trip a range', () => {
+  for (const range of ['^9.5.1', '~3.22.0', '>=1.2.3', '4.6.0']) {
+    assert.equal(rangePrefix(range) + rules.bareVersion(range), range)
+  }
+})
+
+// --------------------------------------------------- applying versions
+
+test('applyVersions writes the planned version and keeps the operator', () => {
+  const pkg = { dependencies: { zod: '^3.22.0' } }
+  const result = applyVersions(pkg, [{ name: 'zod', version: '3.24.0' }])
+
+  assert.equal(pkg.dependencies.zod, '^3.24.0')
+  assert.deepEqual(result.applied, [{ name: 'zod', to: '3.24.0', section: 'dependencies' }])
+  assert.deepEqual(result.missing, [])
+})
+
+test('applyVersions finds a package in any dependency section', () => {
+  const pkg = { devDependencies: { vitest: '~2.0.0' }, peerDependencies: { react: '18.0.0' } }
+  applyVersions(pkg, [
+    { name: 'vitest', version: '2.1.0' },
+    { name: 'react', version: '18.3.1' },
+  ])
+
+  assert.equal(pkg.devDependencies.vitest, '~2.1.0')
+  assert.equal(pkg.peerDependencies.react, '18.3.1')
+})
+
+test('applyVersions reports a package the manifest does not declare', () => {
+  // Nothing is written for it, so the manifest hash is unchanged and `apply`
+  // exits 4 - a no-op apply is an error, never a silent success.
+  const pkg = { dependencies: { zod: '^3.22.0' } }
+  const result = applyVersions(pkg, [{ name: 'ghost', version: '9.9.9' }])
+
+  assert.deepEqual(result.applied, [])
+  assert.deepEqual(result.missing, ['ghost'])
+  assert.deepEqual(pkg, { dependencies: { zod: '^3.22.0' } })
+})
+
+test('declaredVersion reads back what the manifest now says', () => {
+  const pkg = { dependencies: { zod: '^3.24.0' } }
+
+  assert.equal(declaredVersion(pkg, 'zod'), '3.24.0')
+  assert.equal(declaredVersion(pkg, 'ghost'), null)
+})
+
+// ------------------------------------------------------------- format
+
+test('detectIndent reads the manifest own indentation', () => {
+  assert.equal(detectIndent('{\n  "name": "t"\n}\n'), '  ')
+  assert.equal(detectIndent('{\n    "name": "t"\n}\n'), '    ')
+  assert.equal(detectIndent('{\n\t"name": "t"\n}\n'), '\t')
+})
+
+test('detectIndent falls back to two spaces on a one-line manifest', () => {
+  assert.equal(detectIndent('{"name":"t"}'), '  ')
 })

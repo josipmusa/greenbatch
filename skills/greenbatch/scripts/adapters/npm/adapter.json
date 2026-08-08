@@ -10,6 +10,8 @@
   "requires": ["node", "npm", "git"],
   "capabilities": ["lockfile", "audit", "family", "bump", "prerelease"],
   "conformance": {
-    "unmatchedId": "greenbatch-no-such-package-9f3a1c"
+    "unmatchedId": "greenbatch-no-such-package-9f3a1c@1.0.0",
+    "rejectFixtures": ["fixtures/npm-pnpm"],
+    "gate": "npm run verify"
   }
 }

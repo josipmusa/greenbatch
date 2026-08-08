@@ -22,7 +22,14 @@ trap 'rm -f "$err"' EXIT
 
 # ncu resolves the `latest` dist-tag for every dependency. One unrestricted call;
 # the patch/minor/major split is computed from the result by rules.cjs.
-if ! upgraded=$(npx --yes npm-check-updates --jsonUpgraded 2>"$err"); then
+#
+# The major line is pinned rather than left floating: `npx --yes` would silently
+# adopt a new major of the discovery tool mid-schedule, and a change in how ncu
+# reports versions would land in the facts - and so in the report - with nothing
+# in this repository having changed. Override with NCU_SPEC to test an upgrade.
+NCU_SPEC="${NCU_SPEC:-npm-check-updates@18}"
+
+if ! upgraded=$(npx --yes "$NCU_SPEC" --jsonUpgraded 2>"$err"); then
   echo "npm/discover: npm-check-updates failed:" >&2
   tail -20 "$err" >&2
   exit 2

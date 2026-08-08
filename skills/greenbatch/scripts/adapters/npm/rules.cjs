@@ -21,6 +21,86 @@ function bareVersion(range) {
   return String(range).replace(/^[^0-9]*/, '')
 }
 
+/**
+ * The operator `bareVersion` strips: "^9.5.1" -> "^". The exact inverse, so
+ * `rangePrefix(r) + bareVersion(r) === r` for every range.
+ *
+ * `apply` re-attaches it, because the run updates versions and must not quietly
+ * change a repo's pinning policy: a package deliberately pinned exactly stays
+ * pinned exactly, and a caret range stays a caret range.
+ */
+function rangePrefix(range) {
+  return /^[^0-9]*/.exec(String(range ?? ''))[0]
+}
+
+/**
+ * Splits an element id into the package and the version it pins.
+ *
+ * npm's element id is `name@version` - the version is part of the id precisely
+ * so `apply` cannot re-resolve `latest`. Splitting on the LAST `@` keeps scoped
+ * names intact: "@mantine/core@9.5.1" -> { "@mantine/core", "9.5.1" }.
+ *
+ * Returns null for anything that is not a versioned id, including a bare
+ * package name; `apply` turns that into exit 2 rather than guessing a version.
+ */
+function parseElementId(id) {
+  const s = String(id ?? '')
+  const at = s.lastIndexOf('@')
+  // at === 0 is a scope marker with no version ("@types/node"), not a split.
+  if (at <= 0) return null
+  const name = s.slice(0, at)
+  const version = s.slice(at + 1)
+  if (!name || !version) return null
+  return { name, version }
+}
+
+/** The section of `pkg` that declares `name`, or null. */
+function sectionOf(pkg, name) {
+  return SECTIONS.find((s) => pkg[s] && pkg[s][name] !== undefined) ?? null
+}
+
+/** The bare version the manifest currently declares for `name`, or null. */
+function declaredVersion(pkg, name) {
+  const section = sectionOf(pkg, name)
+  return section ? bareVersion(pkg[section][name]) : null
+}
+
+/**
+ * Writes each planned version into `pkg` in place, keeping the declared range
+ * operator, and reports what it could and could not find.
+ *
+ * A name the manifest does not declare is skipped rather than added: adding it
+ * would invent a dependency, and skipping leaves the manifest byte-identical so
+ * `apply` exits 4 - the contract's signal that an element id matched nothing.
+ */
+function applyVersions(pkg, entries) {
+  const applied = []
+  const missing = []
+
+  for (const { name, version } of entries) {
+    const section = sectionOf(pkg, name)
+    if (!section) {
+      missing.push(name)
+      continue
+    }
+    pkg[section][name] = rangePrefix(pkg[section][name]) + version
+    applied.push({ name, to: version, section })
+  }
+
+  return { applied, missing }
+}
+
+/**
+ * The indentation a manifest is written with, so rewriting it produces a
+ * one-line diff instead of reformatting the whole file. `npm pkg set` is not
+ * used for the same reason: it re-sorts dependency keys, and the deps branch is
+ * supposed to be a clean deps-only diff.
+ */
+function detectIndent(raw) {
+  const m = /\n([ \t]+)"/.exec(String(raw ?? ''))
+  return m ? m[1] : '  '
+}
+
 /** patch | minor | major | unknown. */
 function semverBump(from, to) {
   const parse = (v) => {
@@ -149,7 +229,10 @@ function buildUpdates(pkg, upgraded) {
       const from = bareVersion(fromRange)
       const to = bareVersion(toRange)
       return {
-        id: name, // npm's element id is simply the package name
+        // The version is part of the id so `apply` pins exactly what was
+        // discovered here, rather than re-resolving `latest` and quietly taking
+        // a release that landed between discovery and apply.
+        id: `${name}@${to}`,
         name,
         from,
         to,
@@ -167,11 +250,17 @@ function buildUpdates(pkg, upgraded) {
 
 module.exports = {
   SECTIONS,
+  applyVersions,
   assignFamilies,
   bareVersion,
   buildUpdates,
+  declaredVersion,
+  detectIndent,
   isPrerelease,
   npmScope,
+  parseElementId,
+  rangePrefix,
+  sectionOf,
   semverBump,
   typesBaseOf,
 }

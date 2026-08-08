@@ -1,14 +1,26 @@
 #!/usr/bin/env bash
 # Applies npm updates for the named element ids and syncs the lockfile.
 #
-# Usage:  apply <repo-dir> <element-id>...     (npm element id = package name)
-# Prints: {"applied":[{"name":"zod","to":"3.24.0"}]}
-# Exit:   0 applied; 2 tool failure; 4 nothing changed
+# Usage:  apply <repo-dir> <element-id>...   (npm element id = <name>@<version>)
+# Prints: {"applied":[{"id":"zod@3.24.0","name":"zod","to":"3.24.0"}]}
+# Exit:   0 applied; 2 tool failure, malformed id, or a partial match;
+#         4 nothing changed
 #
-# Exit 4 matters: a filter that matches nothing leaves the manifest untouched and
-# ncu still exits 0. Without this check the run would commit an empty change and
-# report an update that never happened. A no-op apply is a detectable error, not
-# a committable success.
+# The version is part of the element id, and this script writes exactly that
+# version. It deliberately does NOT ask the registry what `latest` is: discovery
+# already decided, the planner already tiered that decision, and a release
+# published between the two would otherwise enter the tier-1 batch as an unread
+# major. What lands is what was planned and what the report will claim.
+#
+# Exit 4 matters: an element id matching no declared package leaves the manifest
+# untouched. Without this check the run would commit an empty change and report
+# an update that never happened. A no-op apply is a detectable error, not a
+# committable success.
+#
+# The manifest is edited through a parse/serialize round trip that preserves key
+# order and the file's own indentation. `npm pkg set` re-sorts dependency keys,
+# which would turn a one-line version bump into a whole-file diff on the branch
+# that is supposed to carry a clean deps-only change.
 set -euo pipefail
 
 ADAPTER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,15 +34,58 @@ cd "$repo"
 
 before=$(git hash-object package.json)
 
-# ncu takes a space-delimited filter list.
-if ! npx --yes npm-check-updates -u --filter "$*" >/dev/null 2>&1; then
-  echo "npm/apply: npm-check-updates failed for: $*" >&2
-  exit 2
+# Writes the planned versions, or refuses and leaves the manifest untouched.
+#   exit 2 - malformed id, or only some ids matched a declared package
+#   exit 3 - no id matched anything (bash turns this into the contract's exit 4)
+set +e
+IDS="$*" node <<'JS'
+const fs = require("fs")
+const rules = require(process.env.ADAPTER_DIR + "/rules.cjs")
+
+const ids = process.env.IDS.split(/\s+/).filter(Boolean)
+const entries = []
+for (const id of ids) {
+  const parsed = rules.parseElementId(id)
+  if (!parsed) {
+    console.error(`npm/apply: '${id}' is not a <name>@<version> element id`)
+    process.exit(2)
+  }
+  entries.push({ id, ...parsed })
+}
+
+const raw = fs.readFileSync("package.json", "utf8")
+const pkg = JSON.parse(raw)
+const { applied, missing } = rules.applyVersions(pkg, entries)
+
+if (applied.length === 0) {
+  console.error(`npm/apply: no declared package matched: ${missing.join(" ")}`)
+  process.exit(3)
+}
+if (missing.length > 0) {
+  // Half an element list is worse than none of it: the batch would be committed
+  // and reported as complete while some packages never moved. Stale discovery
+  // is the usual cause, so fail loudly and let core re-discover.
+  console.error(`npm/apply: these element ids matched no declared package: ${missing.join(" ")}`)
+  process.exit(2)
+}
+
+const indent = rules.detectIndent(raw)
+const eof = raw.endsWith("\n") ? "\n" : ""
+fs.writeFileSync("package.json", JSON.stringify(pkg, null, indent) + eof)
+JS
+code=$?
+set -e
+
+# `!` and `&&` both clobber the status under `set -e`, so it is captured plainly.
+if [ "$code" -eq 3 ]; then
+  exit 4
+elif [ "$code" -ne 0 ]; then
+  exit "$code"
 fi
 
 after=$(git hash-object package.json)
 if [ "$before" = "$after" ]; then
-  echo "npm/apply: package.json unchanged - no package matched: $*" >&2
+  echo "npm/apply: package.json unchanged - nothing matched: $*" >&2
   exit 4
 fi
 
@@ -39,19 +94,20 @@ if ! npm install >/dev/null 2>&1; then
   exit 2
 fi
 
-# Report what actually landed, so the PR body quotes reality rather than the plan.
-NAMES="$*" node <<'JS'
+# Report what the manifest NOW says, read back rather than echoed from the ids,
+# so the PR body quotes the file instead of the plan. Conformance asserts this
+# matches the version discovery offered.
+IDS="$*" node <<'JS'
 const fs = require("fs")
 const rules = require(process.env.ADAPTER_DIR + "/rules.cjs")
 
 const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"))
-const range = (name) => {
-  for (const s of rules.SECTIONS) if (pkg[s] && pkg[s][name] !== undefined) return pkg[s][name]
-  return null
-}
-const applied = process.env.NAMES.split(/\s+/).filter(Boolean).map((name) => ({
-  name,
-  to: rules.bareVersion(range(name) ?? "") || null,
-}))
+const applied = process.env.IDS.split(/\s+/)
+  .filter(Boolean)
+  .map((id) => {
+    const { name } = rules.parseElementId(id)
+    return { id, name, to: rules.declaredVersion(pkg, name) }
+  })
+
 process.stdout.write(JSON.stringify({ applied }, null, 2) + "\n")
 JS
