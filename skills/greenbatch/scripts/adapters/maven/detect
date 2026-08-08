@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Does this repo use the Maven ecosystem?
+#
+# Usage: detect [repo-dir]        (default: current directory)
+# Exit:  0 this adapter applies; 1 it does not
+set -euo pipefail
+
+repo="${1:-.}"
+
+[ -f "$repo/pom.xml" ]

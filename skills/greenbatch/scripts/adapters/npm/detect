@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Does this repo use the npm ecosystem?
+#
+# Usage: detect [repo-dir]        (default: current directory)
+# Exit:  0 this adapter applies; 1 it does not
+#
+# Detection is a file test and nothing more: it must stay cheap enough for the
+# orchestrator to run every installed adapter on every run.
+set -euo pipefail
+
+repo="${1:-.}"
+
+[ -f "$repo/package.json" ]

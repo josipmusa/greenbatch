@@ -1,0 +1,15 @@
+{
+  "name": "maven",
+  "description": "Maven coordinates declared in pom.xml, moved through the versions-maven-plugin.",
+  "status": "core",
+  "detect": {
+    "files": ["pom.xml"]
+  },
+  "manifests": ["pom.xml"],
+  "lockfiles": [],
+  "requires": ["mvn", "java", "python3", "git"],
+  "capabilities": ["unmanageable", "bump", "prerelease", "risky"],
+  "conformance": {
+    "unmatchedId": "dependency:com.example.greenbatch:no-such-artifact=1.0.0"
+  }
+}

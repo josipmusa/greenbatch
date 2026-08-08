@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Applies npm updates for the named element ids and syncs the lockfile.
+#
+# Usage:  apply <repo-dir> <element-id>...     (npm element id = package name)
+# Prints: {"applied":[{"name":"zod","to":"3.24.0"}]}
+# Exit:   0 applied; 2 tool failure; 4 nothing changed
+#
+# Exit 4 matters: a filter that matches nothing leaves the manifest untouched and
+# ncu still exits 0. Without this check the run would commit an empty change and
+# report an update that never happened. A no-op apply is a detectable error, not
+# a committable success.
+set -euo pipefail
+
+ADAPTER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export ADAPTER_DIR
+
+repo="$1"
+shift
+[ $# -gt 0 ] || { echo "usage: apply <repo-dir> <element-id>..." >&2; exit 2; }
+
+cd "$repo"
+
+before=$(git hash-object package.json)
+
+# ncu takes a space-delimited filter list.
+if ! npx --yes npm-check-updates -u --filter "$*" >/dev/null 2>&1; then
+  echo "npm/apply: npm-check-updates failed for: $*" >&2
+  exit 2
+fi
+
+after=$(git hash-object package.json)
+if [ "$before" = "$after" ]; then
+  echo "npm/apply: package.json unchanged - no package matched: $*" >&2
+  exit 4
+fi
+
+if ! npm install >/dev/null 2>&1; then
+  echo "npm/apply: npm install failed after upgrading: $*" >&2
+  exit 2
+fi
+
+# Report what actually landed, so the PR body quotes reality rather than the plan.
+NAMES="$*" node <<'JS'
+const fs = require("fs")
+const rules = require(process.env.ADAPTER_DIR + "/rules.cjs")
+
+const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"))
+const range = (name) => {
+  for (const s of rules.SECTIONS) if (pkg[s] && pkg[s][name] !== undefined) return pkg[s][name]
+  return null
+}
+const applied = process.env.NAMES.split(/\s+/).filter(Boolean).map((name) => ({
+  name,
+  to: rules.bareVersion(range(name) ?? "") || null,
+}))
+process.stdout.write(JSON.stringify({ applied }, null, 2) + "\n")
+JS

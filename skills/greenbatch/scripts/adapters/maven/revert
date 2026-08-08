@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Reverts every pom in the project to HEAD. Covers multi-module layouts, and
+# clears any versions-plugin backup poms that slipped through.
+#
+# Maven has no lockfile and no install step, so restoring the poms is already
+# enough for the next gate to run against a tree that matches the manifest.
+#
+# Usage: revert [repo-dir]
+set -euo pipefail
+
+cd "${1:-.}"
+
+# shellcheck disable=SC2046  # word splitting is the point: one arg per pom
+git checkout -- $(git ls-files '*pom.xml' 'pom.xml')
+find . -name 'pom.xml.versionsBackup' -delete

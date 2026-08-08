@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Applies Maven updates using the lever that actually controls each version.
+#
+# Usage: apply <repo-dir> <element-id>...
+#   element-id := property:<name>=<version>
+#               | dependency:<groupId:artifactId>=<version>
+#               | parent=<version>
+#
+# Exit: 0 applied; 2 tool failure or malformed id; 4 nothing changed
+#
+# The id syntax is this adapter's private business - core copies the ids out of
+# the facts JSON and hands them straight back. Every goal pins the exact
+# discovered version rather than re-resolving "latest", so what gets applied is
+# what was planned and reported even if a new release lands mid-run.
+set -euo pipefail
+
+repo="$1"
+shift
+[ $# -gt 0 ] || { echo "usage: apply <repo-dir> <element-id>..." >&2; exit 2; }
+
+cd "$repo"
+
+VERSIONS_PLUGIN="${VERSIONS_PLUGIN:-org.codehaus.mojo:versions-maven-plugin:2.19.1}"
+MVN="./mvnw"
+[ -x "$MVN" ] || MVN="mvn"
+
+specs=("$@")
+before=$(git hash-object pom.xml)
+log=$(mktemp)
+trap 'rm -f "$log"' EXIT
+
+for spec in "${specs[@]}"; do
+  goal=()
+  case "$spec" in
+    property:*)
+      body="${spec#property:}"
+      goal=("${VERSIONS_PLUGIN}:set-property"
+        -Dproperty="${body%%=*}" -DnewVersion="${body#*=}")
+      ;;
+    dependency:*)
+      body="${spec#dependency:}"
+      goal=("${VERSIONS_PLUGIN}:use-dep-version"
+        -Dincludes="${body%%=*}" -DdepVersion="${body#*=}" -DforceVersion=true)
+      ;;
+    parent=*)
+      # update-parent takes a version range; [x] pins that exact version.
+      goal=("${VERSIONS_PLUGIN}:update-parent"
+        -DparentVersion="[${spec#parent=}]" -DforceUpdate=true)
+      ;;
+    *)
+      echo "maven/apply: unrecognized element id '$spec'" >&2
+      exit 2
+      ;;
+  esac
+
+  if ! "$MVN" -B -q "${goal[@]}" -DgenerateBackupPoms=false >"$log" 2>&1; then
+    echo "maven/apply: failed applying '$spec':" >&2
+    tail -20 "$log" >&2
+    exit 2
+  fi
+done
+
+after=$(git hash-object pom.xml)
+if [ "$before" = "$after" ]; then
+  echo "maven/apply: pom.xml unchanged - wrong lever or no match for: ${specs[*]}" >&2
+  exit 4
+fi

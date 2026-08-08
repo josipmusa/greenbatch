@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Reverts the npm manifest and lockfile to HEAD, then reinstalls so node_modules
+# matches the reverted lockfile. Without the reinstall the next gate would run
+# against the tree the failed batch left behind.
+#
+# Usage: revert [repo-dir]
+set -euo pipefail
+
+cd "${1:-.}"
+
+git checkout -- package.json package-lock.json
+npm ci >/dev/null 2>&1 || npm install >/dev/null 2>&1

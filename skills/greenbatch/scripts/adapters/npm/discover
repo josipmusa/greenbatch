@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Discovers available npm updates as facts JSON. Side-effect free: it reads
+# package.json and asks the registry, and changes nothing on disk.
+#
+# Usage:  discover [repo-dir]
+# Prints: facts JSON (see docs/adapters.md) on stdout
+# Exit:   0 on success (an empty updates list is success), 2 on tool failure
+#
+# No tier, budget, or config logic lives here - that is core's job, and this
+# script never reads greenbatch's config. What DOES live here is everything that
+# needs to know npm: semver bump classification, prerelease detection, and the
+# family grouping rules. Those live in rules.cjs so they can be unit tested.
+set -euo pipefail
+
+ADAPTER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export ADAPTER_DIR
+
+cd "${1:-.}"
+
+err=$(mktemp)
+trap 'rm -f "$err"' EXIT
+
+# ncu resolves the `latest` dist-tag for every dependency. One unrestricted call;
+# the patch/minor/major split is computed from the result by rules.cjs.
+if ! upgraded=$(npx --yes npm-check-updates --jsonUpgraded 2>"$err"); then
+  echo "npm/discover: npm-check-updates failed:" >&2
+  tail -20 "$err" >&2
+  exit 2
+fi
+
+[ -z "$upgraded" ] && upgraded='{}'
+
+UPGRADED="$upgraded" node <<'JS'
+const fs = require("fs")
+const rules = require(process.env.ADAPTER_DIR + "/rules.cjs")
+
+const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"))
+const updates = rules.buildUpdates(pkg, JSON.parse(process.env.UPGRADED))
+
+process.stdout.write(
+  JSON.stringify(
+    {
+      ecosystem: "npm",
+      // `audit` tells core this ecosystem has a transitive pass worth budgeting
+      // a gate run for; `lockfile` that reverting has to restore one.
+      capabilities: ["lockfile", "audit"],
+      updates,
+      unmanageable: [],
+    },
+    null,
+    2,
+  ) + "\n",
+)
+JS

@@ -1,0 +1,15 @@
+{
+  "name": "npm",
+  "description": "npm / Node.js packages declared in package.json, resolved through npm-check-updates.",
+  "status": "core",
+  "detect": {
+    "files": ["package.json"]
+  },
+  "manifests": ["package.json"],
+  "lockfiles": ["package-lock.json"],
+  "requires": ["node", "npm", "git"],
+  "capabilities": ["lockfile", "audit", "family", "bump", "prerelease"],
+  "conformance": {
+    "unmatchedId": "greenbatch-no-such-package-9f3a1c"
+  }
+}
