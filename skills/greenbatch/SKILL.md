@@ -23,10 +23,12 @@ unexpected repo layout.
 ## Layout
 
 ```
+scripts/core/config.mjs             # find + validate the config -> normalized JSON
 scripts/core/detect.sh              # which adapters apply to this repo
 scripts/core/plan.mjs               # facts + config -> tiered, grouped plan
 scripts/core/gate.sh                # runs the gate command, captures the log
 scripts/core/alerts.sh              # open Dependabot alerts, projected
+scripts/core/push.sh                # the only script that touches a remote
 scripts/adapters/<ecosystem>/       # detect, discover, apply, revert, adapter.json
 templates/pr-body.md
 ```
@@ -55,19 +57,29 @@ commit_prefix: "build"
 max_gate_runs: 30
 ```
 
-**Precedence.** `.claude/greenbatch.yml` is canonical. If it is absent, read
-`greenbatch.yml` at the repo root - agents other than Claude Code run this skill, and
-a repo that does not otherwise have a `.claude/` directory should not need one. If
-both exist, `.claude/greenbatch.yml` wins and you note the shadowed root file in the
-run report. Nothing else is a config source.
+**Do not read this file yourself.** `scripts/core/config.mjs` finds it, applies the
+precedence rule, validates it, and prints the normalized JSON `plan.mjs` consumes:
 
-Read the file yourself and normalize it to JSON for `plan.mjs`:
-
-```json
-{"groups": {...}, "risky": [...], "reject": [...], "maxGateRuns": 30}
+```bash
+scripts/core/config.mjs <repo> > config.json
 ```
 
-That is the only place config is interpreted - no script parses YAML.
+| Exit | Meaning | What to do |
+|---|---|---|
+| 0 | Valid. Normalized JSON on stdout, including `gate`, `base`, `targets`, `derivedTargets`. | Continue. |
+| 2 | The config exists but is wrong - unknown key, wrong type, unsupported YAML. stderr names the file, the line, and usually the key that was meant. | **Stop and report it verbatim.** Do not "fix" the config and do not fall back to defaults. |
+| 3 | No config file at either path. | Interactive: run the bootstrap below. Headless: abort - see **Headless mode**. |
+
+Exit 2 is a stop, not a warning. The reason config parsing is a script at all is that
+a typo used to fail silently and in the worst direction: `rejects:` instead of `reject:`
+meant the reject list was empty, so a package the user had deliberately pinned got
+updated and nothing in the report mentioned it.
+
+**Precedence**, which `config.mjs` implements: `.claude/greenbatch.yml` is canonical. If
+it is absent, `greenbatch.yml` at the repo root is used - agents other than Claude Code
+run this skill, and a repo that does not otherwise have a `.claude/` directory should
+not need one. If both exist, the canonical one wins, `config.mjs` says so on stderr, and
+you carry that into the run report. Nothing else is a config source.
 
 ### When the config file is missing (interactive only)
 
@@ -107,14 +119,27 @@ ecosystems Dependabot still owns.)
 1. **Abort if the working tree is dirty.** Do not stash, do not commit. Report what is
    dirty and stop.
 2. Record the current branch - you restore it at the end, on success or failure.
-3. `git fetch origin`.
-4. `scripts/core/detect.sh` for ecosystems (or the config's explicit list). None → stop.
-5. **Overlap check:** read `.github/dependabot.yml`. If blocks are still enabled for an
+3. `scripts/core/config.mjs <repo>` for the config. Handle exits 2 and 3 as above.
+4. `git fetch origin`.
+5. `scripts/core/detect.sh` for ecosystems (or the config's explicit list). None → stop.
+6. **Overlap check:** read `.github/dependabot.yml`. If blocks are still enabled for an
    ecosystem this run covers, warn the user and note it in the PR body. Non-blocking.
-6. **Close stale PRs from previous runs:** any open PR from a `deps/*` branch this
-   skill created, including derived-branch PRs. Close them and delete their branches;
-   their updates get rediscovered here. Note the supersession in the new PR bodies.
-7. Cut `deps/YYYY-MM-DD` from `origin/<base>`.
+7. **Close stale PRs from previous runs.** Both conditions must hold before you close
+   or delete anything:
+   - the head branch matches `deps/YYYY-MM-DD` or `deps/YYYY-MM-DD-<target>` exactly -
+     a date, not a `deps/*` glob; and
+   - the PR body carries the `<!-- greenbatch-run: ... -->` marker from
+     `templates/pr-body.md`.
+
+   A `deps/*` glob alone is not enough: `deps/fix-lockfile` is a perfectly ordinary
+   branch for a human to push, and closing someone's PR and deleting their branch is
+   the only destructive thing this run does. Anything matching only one condition gets
+   mentioned in the report and left alone. Delete branches with
+   `scripts/core/push.sh delete <branch>`, which enforces the same pattern.
+
+   Note the supersession in the new PR bodies; the closed PRs' updates get
+   rediscovered here.
+8. Cut `deps/YYYY-MM-DD` from `origin/<base>`.
 
 ### 2. Clean gate - the one that must pass
 
@@ -137,7 +162,7 @@ and a PR body full of version numbers that were never true.
 scripts/adapters/npm/discover    <repo> > npm-facts.json
 scripts/adapters/maven/discover  <repo> > mvn-facts.json
 scripts/core/alerts.sh           <repo> > alerts.json
-scripts/core/plan.mjs --config normalized.json --discover npm-facts.json [--discover mvn-facts.json] --alerts alerts.json
+scripts/core/plan.mjs --config config.json --discover npm-facts.json [--discover mvn-facts.json] --alerts alerts.json
 ```
 
 Run `discover` for every adapter `detect.sh` reported true, and only those.
@@ -146,6 +171,11 @@ The plan gives you `tier1`, `tier2` (already in execution order), and
 `estimatedGateRuns` vs `maxGateRuns`. If `overBudget` is true, say so up front with the
 numbers - the user may want to raise the cap or narrow the run before spending an hour
 of gate time. Headless, you proceed instead; see **Headless mode**.
+
+`notes` carries caveats about what discovery did **not** look at - a multi-module Maven
+project whose child modules went unscanned, for instance. These are not updates, so they
+have their own section in the report and the PR body. A reader who is not told about
+them reads the report as covering the whole project.
 
 It also gives three lists of updates that exist but will **not** be applied. All three
 belong in the PR body: staying silent about them reads as "everything is current",
@@ -226,9 +256,15 @@ The deps branch is **never** contaminated with commits from another branch:
   Push it and open a PR toward `base` (when `base` is in `targets`). This PR carries
   the full report.
 - For every **other** target: create `deps/YYYY-MM-DD-<target>` from `origin/<target>`,
-  merge the deps branch into it, push, and open a PR toward that target with the short
-  body. This carries the updates across without leaking the target's unreleased commits
-  into the main-bound branch.
+  merge the deps branch into it, push, re-run the gate on it, and open a PR toward that
+  target with the short body. This carries the updates across without leaking the
+  target's unreleased commits into the main-bound branch.
+
+**Push with `scripts/core/push.sh push <branch>`, never with raw `git push`.** It is the
+only thing in this skill that mutates a remote, and it refuses any ref that is not a
+`deps/YYYY-MM-DD[-target]` branch, refuses force refspecs, and pushes by explicit
+refspec so a repo-local `push.default` cannot redirect it. If it refuses a branch, that
+is a bug in the branch name - report it rather than working around it with `git push`.
 
 **Merge conflicts on a derived branch.** Lockfile conflicts: take the manifest merge,
 regenerate (`npm install`), re-run the gate on that branch, and note it in that PR's
@@ -257,25 +293,49 @@ For npm repos, re-run `npm ci` after switching back. The run's installs left
 has the restored branch's `package.json` and the wrong dependencies on disk - a
 confusing state to hand back, and one they did not ask for.
 
-Then report: kept, reverted, skipped, not attempted, available-but-not-taken, alerts
-resolved, gate runs and total gate time, and the PR links.
+Then report: kept, reverted, skipped, not attempted, available-but-not-taken, discovery
+notes, alerts resolved, gate runs and total gate time, and the PR links.
 
-**Always write the report to `.greenbatch/report.md` as well as stdout.** Every exit
-path writes it, including an abort - a scheduled run that stopped in preflight has to
-leave an artifact saying so, or the next person sees only an exit code. Add
-`.greenbatch/` to `.gitignore` if it is not already ignored, and never commit it.
+**Always write the report to `.git/greenbatch/report.md` as well as stdout**, and print
+that path at the end of the run. Every exit path writes it, including an abort - a
+scheduled run that stopped in preflight has to leave an artifact saying so, or the next
+person sees only an exit code.
+
+It goes under `.git/` on purpose. git never tracks anything there, so the report needs
+no `.gitignore` entry, never appears in `git status`, and survives the branch switches
+the run makes. The alternative - a `.greenbatch/` directory at the repo root - meant
+either editing the user's `.gitignore` or handing back a tree with an untracked
+directory in it, and this run promises to leave the checkout as it found it.
+
+## Plan-only mode
+
+`/greenbatch plan` answers "what would this do?" without doing any of it. It is the
+cheapest way to try greenbatch on an unfamiliar repo, and the honest way to check a
+config change.
+
+Run steps 3's scripts and nothing else: read the config, detect ecosystems, `discover`,
+`alerts.sh`, `plan.mjs`. Then report the tier-1 batch, the tier-2 order, the three
+not-taken lists, any `notes`, and `estimatedGateRuns` against `maxGateRuns`.
+
+**Cut no branch, apply nothing, run no gate, push nothing, open no PR.** Nothing in this
+mode writes to the working tree, so unlike a real run it is safe on a dirty tree - but
+say which branch the numbers describe. They come from the current checkout, not from
+`origin/<base>`, so a stale local branch gives a stale plan (see step 3). If the
+checkout is behind its remote, say so next to the numbers.
 
 ## Headless mode
 
 The run is designed to complete with no human present. Everything above applies, with
 these differences when nobody can answer a question:
 
-- **Config file missing → abort.** Write the report saying which paths were checked
-  (`.claude/greenbatch.yml`, then `greenbatch.yml`) and what to do about it. **Never
-  invent a `gate`, and never write a config file without approval.** A gate the user
-  has not seen makes every "verified" claim in every future run untrue, so the
-  bootstrap in *When the config file is missing* is interactive-only, without
-  exception.
+- **Config file missing (`config.mjs` exit 3) → abort.** Write the report with the
+  paths `config.mjs` listed and what to do about it. **Never invent a `gate`, and never
+  write a config file without approval.** A gate the user has not seen makes every
+  "verified" claim in every future run untrue, so the bootstrap in *When the config file
+  is missing* is interactive-only, without exception.
+- **Config invalid (`config.mjs` exit 2) → abort**, quoting the file, line, and message.
+  Do not repair it. A scheduled run correcting a config it was not asked to correct is
+  how a reject list quietly stops being honoured.
 - **`overBudget` plan → proceed, do not ask.** Spend the budget in the order the plan
   already defines: tier 1 to completion, then tier 2 security-first. Report the overage
   prominently at the top of the report and in the PR body, with the estimate, the cap,
@@ -285,7 +345,7 @@ these differences when nobody can answer a question:
 - **Dirty tree, or a failing gate on the clean branch → abort and report**, exactly as
   interactive. These mean the run cannot produce a trustworthy result at all, and a
   scheduled run must never "fix" them by stashing or by committing someone's work.
-- **Every stop condition writes `.greenbatch/report.md`.** Aborts included. Machine
+- **Every stop condition writes `.git/greenbatch/report.md`.** Aborts included. Machine
   callers look for that file.
 
 `docs/headless.md` has invocation examples, the required environment, and what
@@ -293,7 +353,9 @@ report-only mode looks like when no token is present.
 
 ## Safety rules
 
-- **Never force-push.** Only ever push the skill's own `deps/*` branches.
+- **Never force-push, and never push with raw `git push`.** Every push and every remote
+  branch deletion goes through `scripts/core/push.sh`, which enforces the first three
+  rules here rather than trusting this list to be followed.
 - **Never push to `base` or any target branch.**
 - **Never merge a PR.** This skill opens them.
 - **Never `npm audit fix --force`.**

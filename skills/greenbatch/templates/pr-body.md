@@ -1,8 +1,12 @@
 <!--
 Structure for the FULL report, which goes on the PR toward `branches.base`.
 Derived-branch PRs get the short body at the bottom instead. The same content is
-what `.greenbatch/report.md` carries, so a headless run leaves this behind even
-when no PR was opened.
+what `.git/greenbatch/report.md` carries, so a headless run leaves this behind
+even when no PR was opened.
+
+Keep the `greenbatch-run` marker on BOTH bodies. Stale-PR cleanup will not close
+a PR or delete its branch without it, so a PR filed without the marker becomes
+one a later run has to leave alone and mention instead.
 
 Fill every section from the run's actual records: the plan, the apply output, and
 the saved gate logs. Never describe an update you did not verify against those
@@ -91,6 +95,17 @@ and `rejected` lists - omit whichever is empty:
 - `org.postgresql:postgresql` 42.7.11 → 42.7.13 - pinned by the parent POM; moves when the parent moves.
 - `react-router` 6.1.0 → 7.0.0 - on the reject list.
 
+### Not looked at
+
+<From the plan's `notes`. What discovery did not cover at all - as opposed to
+"Available but not taken", which is about updates it found and did not apply.
+Omit the section when `notes` is empty.
+
+Without this a reader takes the report as covering the whole project, and a
+dependency in an unscanned corner looks current when nobody ever checked it.>
+
+- **maven:** multi-module project - discovery scanned the root pom only; 3 child modules (api, core, web) were not scanned.
+
 ### Run cost
 
 <Gate runs used out of the budget, and total gate time. This is what per-repo
@@ -107,6 +122,9 @@ and `rejected` lists - omit whichever is empty:
 - Dependabot still has `npm` enabled in `.github/dependabot.yml` - remove that block to stop duplicate PRs.
 - Lockfile conflict on merge into `dev` was resolved by regenerating; the gate was re-run green on the derived branch.
 - A root `greenbatch.yml` exists but `.claude/greenbatch.yml` took precedence.
+- Left alone: `deps/fix-lockfile` (#41) matches no run of this skill and was not closed.
+
+<!-- greenbatch-run: <YYYY-MM-DD> -->
 
 ---
 
@@ -126,3 +144,5 @@ See that PR for the full report: what was kept, reverted, and skipped, and why.
 conflict story: what conflicted, that lockfile conflicts were resolved by
 regenerating, and the re-run gate result. If a non-lockfile conflict is
 unresolved, say so plainly at the top - this PR needs a human before it merges.>
+
+<!-- greenbatch-run: <YYYY-MM-DD> -->
