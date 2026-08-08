@@ -39,7 +39,7 @@ that never lets silence read as "everything is current".
 
 ```bash
 # 1. Install the plugin
-/plugin marketplace add OWNER/greenbatch
+/plugin marketplace add josipmusa/greenbatch
 /plugin install greenbatch@greenbatch
 
 # 2. In the repo you want updated, on a clean tree:

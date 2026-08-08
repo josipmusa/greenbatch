@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Marketplace for the greenbatch dependency-update skill: one verified branch and 1-2 PRs per run, instead of one PR and one full CI pipeline per package.",
   "owner": {
-    "name": "greenbatch contributors"
+    "name": "Josip Musa"
   },
   "plugins": [
     {
