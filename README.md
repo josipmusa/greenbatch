@@ -42,14 +42,23 @@ that never lets silence read as "everything is current".
 /plugin marketplace add josipmusa/greenbatch
 /plugin install greenbatch@greenbatch
 
-# 2. In the repo you want updated, on a clean tree:
-/greenbatch run
+# 2. In the repo you want updated - read-only, changes nothing:
+/greenbatch plan
+
+# 3. When the plan looks right, on a clean tree:
+/greenbatch
 ```
 
-The first run has no config, so it proposes one derived from your `.github/dependabot.yml`,
-asks you to confirm the **gate** command, and writes `.claude/greenbatch.yml` once you
-approve. After that the run is fully unattended and can be scheduled - see
-[docs/headless.md](docs/headless.md).
+`/greenbatch plan` discovers, tiers, and reports what a full run *would* do - the
+tier-1 batch, the tier-2 order, everything it would deliberately not take, and the gate
+budget it would spend. It cuts no branch, applies nothing, and runs no gate, so it is
+safe on any repo including a dirty one. It is the honest way to find out whether this
+tool is worth a run on your codebase.
+
+The first full run has no config, so it proposes one derived from your
+`.github/dependabot.yml`, asks you to confirm the **gate** command, and writes
+`.claude/greenbatch.yml` once you approve. After that the run is fully unattended and
+can be scheduled - see [docs/headless.md](docs/headless.md).
 
 Requirements: `git`, `node` (for the planner), plus `npm` or `mvn` + `java` + `python3`
 depending on your ecosystem. `gh` is optional; without it the run finishes its work and
@@ -59,7 +68,8 @@ prints ready-to-paste PR bodies instead of filing them.
 
 `.claude/greenbatch.yml` is canonical. If it is absent, `greenbatch.yml` at the repo root
 is used instead, so agents other than Claude Code can drive this without a `.claude/`
-directory. If both exist, `.claude/` wins and the run says so.
+directory. If both exist, `.claude/` wins and the run says so. Check yours any time with
+`scripts/core/config.mjs .`.
 
 ```yaml
 branches:
@@ -87,13 +97,20 @@ max_gate_runs: 30         # one counter across the whole run
 | `reject` | Never touched, and reported as an intentional pin. Supports `*` suffixes. |
 | `max_gate_runs` | Budget for the whole run. Tier 1 always completes; tier 2 and the transitive pass spend what is left. |
 
+The file is read by `scripts/core/config.mjs`, not interpreted per run. An unknown key
+is an error naming the line and the key you probably meant, never a silent fallback to
+the default - `rejects:` for `reject:` would otherwise mean a package you deliberately
+pinned gets updated with nothing in the report about it.
+
 Grouping inside an ecosystem needs no config: the npm adapter already treats a shared
 scope, and a package with its `@types` stub, as one atomic element.
 
 ## How a run goes
 
-1. **Preflight.** Abort on a dirty tree. Record the current branch. Fetch. Close stale
-   `deps/*` PRs from previous runs. Cut `deps/YYYY-MM-DD` from `origin/<base>`.
+1. **Preflight.** Abort on a dirty tree. Record the current branch. Read and validate the
+   config. Fetch. Close superseded PRs from previous runs - only ones with a dated
+   branch name *and* this tool's marker in the body. Cut `deps/YYYY-MM-DD` from
+   `origin/<base>`.
 2. **Clean gate.** Run the gate on the untouched branch. If it fails, stop - the base is
    broken and every later failure would be blamed on a dependency.
 3. **Discover and plan.** Adapters report the available updates; the planner assigns
@@ -111,30 +128,47 @@ Full detail in [skills/greenbatch/SKILL.md](skills/greenbatch/SKILL.md); the rea
 
 ## Headless
 
-greenbatch is built to run unattended, and the differences are explicit rather than
-emergent: an over-budget plan proceeds and reports instead of asking, a missing config
-aborts rather than inventing a gate, and every stop condition writes
-`.greenbatch/report.md` so a scheduled run always leaves an artifact.
+Headless means a `claude -p` session with nobody watching - on your workstation, a build
+server, or a disposable cloud VM - not a particular CI product. The differences from an
+interactive run are explicit rather than emergent: an over-budget plan proceeds and
+reports instead of asking, a missing or invalid config aborts rather than being guessed
+at or repaired, and every stop condition writes `.git/greenbatch/report.md` so a
+scheduled run always leaves an artifact.
 
-Invocation examples, a GitHub Actions workflow, required environment, and report-only
+Invocation examples, cron and systemd timers, required environment, and report-only
 mode: [docs/headless.md](docs/headless.md).
 
 ## Safety model
 
-These are guarantees, not intentions. Each points at the code that enforces it.
+greenbatch is an agent following a written procedure, using deterministic scripts for
+the mechanical parts. That distinction matters for how much weight each rule below
+carries, so the table is split by it rather than presented as one undifferentiated list
+of "guarantees".
 
-| Guarantee | Where |
+**Enforced by code.** A script refuses; there is no path around it short of editing the
+script.
+
+| Rule | Enforced by |
 |---|---|
-| **Never force-pushes.** Only ever pushes its own `deps/*` branches. | SKILL.md, *Safety rules* |
-| **Never pushes to your base or target branches.** | SKILL.md, *Safety rules* and step 7 |
-| **Never merges a PR.** It opens them and stops. | SKILL.md, *Safety rules* |
-| **Never runs `npm audit fix --force`** - that takes majors without gating them. | SKILL.md step 6 |
-| **Never edits source code to accommodate a breaking change.** It reports what breaks and leaves the decision to you. | SKILL.md step 5 |
-| **Aborts on a dirty working tree.** No stashing, no committing your work. | SKILL.md step 1 |
-| **Aborts if the gate fails on the clean branch**, before touching anything. | SKILL.md step 2 |
-| **Restores your original branch on every exit path** - success, abort, or failure - and reinstalls so your tree matches it. | SKILL.md step 8 |
-| **Never commits a no-op.** An apply that changed nothing exits 4 and is treated as an error. | `scripts/adapters/*/apply`, `docs/design.md` |
-| **Mechanical operations are deterministic, auditable scripts**, not commands improvised per run. | `scripts/`, `docs/adapters.md` |
+| **Never force-pushes**, and only ever pushes `deps/YYYY-MM-DD[-target]` branches - never your base or target branches. Refuses refspecs and flags outright. | `scripts/core/push.sh` |
+| **Never deletes a branch it did not create.** Stale-PR cleanup needs a dated branch name *and* a run marker in the PR body. | `scripts/core/push.sh`, SKILL.md step 1.7 |
+| **Never commits a no-op.** An apply that changed nothing exits 4 and is treated as an error. | `scripts/adapters/*/apply`, conformance |
+| **Never applies a version it did not discover and report.** The version is part of the element id; conformance compares what landed against what was planned. | `conformance/run.sh`, stage 4 |
+| **Never silently accepts a config it did not understand.** An unknown key or wrong type is an error with a line number, not a fallback to defaults. | `scripts/core/config.mjs` |
+| **Never invents a gate.** There is no default and no way to supply one implicitly. | `scripts/core/config.mjs` |
+
+**Rules the run follows.** Part of the procedure in
+[SKILL.md](skills/greenbatch/SKILL.md), which the agent is instructed to follow, and
+which you can read in full.
+
+| Rule | Where |
+|---|---|
+| **Never merges a PR.** It opens them and stops. | *Safety rules* |
+| **Never runs `npm audit fix --force`** - that takes majors without gating them. | Step 6 |
+| **Never edits source code to accommodate a breaking change.** It reports what breaks and leaves the decision to you. | Step 5 |
+| **Aborts on a dirty working tree.** No stashing, no committing your work. | Step 1 |
+| **Aborts if the gate fails on the clean branch**, before touching anything. | Step 2 |
+| **Restores your original branch on every exit path** - success, abort, or failure - and reinstalls so your tree matches it. | Step 8 |
 
 The scripts are readable in an afternoon and runnable outside any agent. See
 [SECURITY.md](SECURITY.md) for the trust boundaries, including what running this against
@@ -155,8 +189,14 @@ Wanted next: **Python (uv/pip), Go, Rust.**
 Stated plainly rather than discovered later:
 
 - **Single-manifest repos only.** No workspace or monorepo support: one `package.json`
-  or one `pom.xml` tree at the root. Multi-module Maven poms are reverted correctly, but
-  discovery reads the root pom.
+  or one `pom.xml` at the root.
+- **Multi-module Maven is partially covered.** Discovery scans the root pom only, which
+  in the usual layout is where `<properties>` and `<dependencyManagement>` live, so most
+  versions are still found and moved. Anything declared in a child module is not, and
+  the run says so in the report rather than letting it read as current. Full reactor
+  support is the next thing planned for the Maven adapter.
+- **npm only, among Node package managers.** pnpm, yarn, and bun projects are declined
+  rather than mismanaged; each needs its own adapter.
 - **npm and Maven only.** Everything else needs an adapter.
 - **GitHub only for PR filing.** Other forges get report-only mode.
 - **No notification step**, by design.

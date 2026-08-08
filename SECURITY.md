@@ -12,12 +12,32 @@ stated here.
 
 ### Guarantees
 
-These are enforced by the run procedure in `skills/greenbatch/SKILL.md`. They are
-worth checking against the source before you trust them.
+greenbatch is an agent following a written procedure, using deterministic scripts for
+the mechanical parts. Some rules below are enforced by a script that refuses; the rest
+are part of the procedure in `skills/greenbatch/SKILL.md`. The distinction is real, so
+it is stated rather than blurred - all of it is worth checking against the source before
+you trust it.
 
-- **Never force-pushes**, ever, to anything.
-- **Only pushes branches it created**, named `deps/*`.
-- **Never pushes to your base branch or any target branch.**
+**Enforced by a script:**
+
+- **Never force-pushes**, ever, to anything, and **only pushes branches it created**,
+  named `deps/YYYY-MM-DD` or `deps/YYYY-MM-DD-<target>` - so never your base branch or
+  any target branch. `scripts/core/push.sh` is the only thing in the tool that mutates a
+  remote, and it rejects anything else, including a refspec or a flag smuggled in as a
+  branch name.
+- **Never deletes a branch it did not create.** Closing superseded PRs requires both a
+  dated branch name and this tool's marker in the PR body.
+- **Never commits a change that did not happen.** An apply that leaves the manifest
+  byte-identical exits 4 and is treated as an error, not a success.
+- **Never applies a version it did not discover and report.** The target version is part
+  of the element id, and the conformance suite compares what actually landed in the
+  manifest against what discovery offered.
+- **Never acts on a config it did not understand.** `scripts/core/config.mjs` rejects an
+  unknown key or a wrong type with a line number instead of falling back to defaults,
+  and there is no default gate.
+
+**Part of the run procedure:**
+
 - **Never merges a pull request.** It opens them and stops.
 - **Never runs `npm audit fix --force`.** That flag takes major versions without gating
   them, which is precisely the thing this tool exists to avoid.
@@ -27,8 +47,6 @@ worth checking against the source before you trust them.
 - **Aborts if your gate fails on the clean branch**, before touching a manifest.
 - **Restores your original branch on every exit path**, including aborts and crashes,
   and reinstalls so your working tree matches the branch it hands back.
-- **Never commits a change that did not happen.** An apply that leaves the manifest
-  byte-identical exits 4 and is treated as an error, not a success.
 
 ### What it executes
 
@@ -42,6 +60,12 @@ worth checking against the source before you trust them.
   you, run it in a container or a disposable CI runner rather than on a developer laptop.
 - **`mvn` goals** from the versions plugin, which resolve artifacts from your configured
   repositories.
+
+Third-party tooling is pinned rather than floating: `npm-check-updates` to its major
+line (override with `NCU_SPEC`) and the versions-maven-plugin to an exact version
+(`VERSIONS_PLUGIN`). A discovery tool that silently changed major version between two
+scheduled runs could change what the report says without anything in your repository
+having changed.
 
 It does not execute anything from the updates' changelogs or release notes; those are
 read as text.

@@ -180,7 +180,7 @@ body can warn about duplicate PRs.
 - **Fixing code to accommodate a breaking change.** Reported as "needs human migration",
   with what breaks in *this* repo. A tool that edits source to make a major fit is a
   tool whose diffs need the same review the dependency update was trying to avoid.
-- **Notifications.** The report on stdout and in `.greenbatch/report.md` is the output;
+- **Notifications.** The report on stdout and in `.git/greenbatch/report.md` is the output;
   wire your own around a headless run.
 - **A forge abstraction.** GitHub via `gh`, and report-only mode everywhere else. `glab`
   takes the same PR body from the same file.

@@ -53,19 +53,30 @@ An adapter is mergeable when it satisfies [docs/adapters.md](docs/adapters.md) a
 2. `fixtures/<ecosystem>-basic/`: the smallest real project in that ecosystem with at
    least one dependency pinned deliberately behind its latest release. It must be
    committed - conformance grades `revert` against git HEAD.
-3. Unit tests for whatever version and grouping logic you wrote. See
+3. A decoy fixture for anything your `detect` must refuse, listed in
+   `conformance.rejectFixtures`. If your ecosystem shares a manifest filename with
+   another tool - as npm does with pnpm, yarn, and bun - this is the difference between
+   declining a repo and mismanaging it.
+4. Unit tests for whatever version and grouping logic you wrote. See
    `skills/greenbatch/tests/npm-rules.test.mjs`. These rules decide what gets batched
    together and what never enters tier 1, and both are invisible when wrong.
-4. Add the ecosystem to the CI matrix in `.github/workflows/ci.yml`.
-5. Add a row to the README's ecosystem list.
+5. Add the ecosystem to the CI matrix in `.github/workflows/ci.yml`.
+6. Add a row to the README's ecosystem list.
 
 Things reviewers will check, because they are the mistakes that cost the most later:
 
-- `apply` exits **4** when nothing changed, verified with a before/after manifest hash.
+- `apply` **pins the version the element id names** and never re-resolves "latest". Put
+  the target version in the id. Conformance compares what landed against what discovery
+  offered, so this is checked, not trusted.
+- `apply` exits **4** when nothing changed, verified with a before/after manifest hash,
+  and exits **2** on a partial match rather than committing half a batch.
+- The `applied` record reads `to` back out of the manifest instead of echoing the id.
+- `detect` identifies the **package manager**, not just the language.
 - `discover` writes nothing to the working tree.
 - `unmanageable` is present and populated - anything you cannot move is reported, never
-  dropped.
+  dropped. `notes` covers anything you did not *look* at.
 - `bump` is `"unknown"` where you are unsure, never a guess at `patch`.
+- Third-party tooling is pinned, with an environment variable to override it.
 - No GNU-only tools. `timeout` in particular does not exist on macOS.
 
 ### Core vs community adapters
@@ -96,11 +107,17 @@ Dependabot keeps the rest.
 
 Other ideas on the list:
 
-- Workspace and monorepo support (multiple manifests per repo). The largest known gap.
+- **Full Maven reactor support.** Today discovery scans the root pom only and reports
+  the child modules it skipped. Covering them means per-module element ids, hashing
+  every pom for the exit-4 check, and a multi-module fixture. The most valuable single
+  improvement to an existing adapter.
+- Workspace and monorepo support for npm (multiple manifests per repo).
+- pnpm, yarn, and bun adapters. `detect` already declines those repos, so the slot is
+  open and the contract is the same.
 - Notification hooks - a possible future addition, deliberately absent for now.
 
 ## Reporting bugs
 
-Include the report file (`.greenbatch/report.md`) if the run produced one, the plan JSON,
+Include the report file (`.git/greenbatch/report.md`) if the run produced one, the plan JSON,
 and the tail of the relevant gate log. A run that misreported something is a more serious
 bug than a run that failed, so say clearly which one you hit.
