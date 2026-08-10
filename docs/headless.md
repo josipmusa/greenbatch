@@ -176,6 +176,41 @@ Nothing here is a secret beyond the API key and the git token, and the run never
 write access to anything other than its own branches - `scripts/core/push.sh` refuses
 any other ref.
 
+### The toolchain the gate needs, not just the one greenbatch needs
+
+Two PATH problems bite scheduled runs specifically, and both surface as a red clean
+gate - which greenbatch reads as "the base branch is broken" and aborts on. The abort is
+the right call on the evidence available. The evidence is what is wrong.
+
+**A version manager's default is not the repo's pin.** nvm, asdf and friends select a
+version from an interactive shell profile that cron, systemd and launchd never read, so
+the run gets whatever the bare PATH resolves - usually a much newer runtime than the repo
+targets. Observed case: a repo pinning Node 22 through `.nvmrc` had its gate run on the
+machine's default Node 26, where a new native global shadowed a test library's polyfill
+and **191 tests failed on an untouched main**. Nothing was broken, and nothing was
+diagnosable from inside the run. Put the version the repo pins on PATH explicitly, and
+derive it from `.nvmrc` or `.tool-versions` rather than hardcoding a patch version that
+the next upgrade silently invalidates.
+
+**The gate shells out to more than a language runtime.** Testcontainers needs a `docker`
+binary and a reachable daemon; browser e2e needs its browsers. These are the *gate's*
+dependencies rather than greenbatch's, so they are absent from the table above - and they
+fail identically. On macOS, `/usr/local/bin` is missing from launchd's default PATH,
+which is exactly where Docker Desktop puts its CLI.
+
+The cheap insurance for both: have the run state the toolchain versions its gate ran on.
+That one line in the report is what lets a reader tell "the base branch is broken" apart
+from "this ran on the wrong Node".
+
+### A rule for whatever drives the session
+
+**The session must not end its turn while work is still running in the background.** The
+process exits with the turn, the gate dies mid-build, and no report is written - so the
+run looks like a fast, clean success to anything checking an exit code. `SKILL.md`
+forbids backgrounding a gate for this reason, but if you wrap the run in a prompt of your
+own, take care not to invite it back: "kick off the gate and report back when it
+finishes" describes something that cannot happen in a `-p` session.
+
 ### Notifications
 
 There are none, by design. The report on stdout and in `.git/greenbatch/report.md` is

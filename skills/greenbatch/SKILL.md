@@ -149,6 +149,19 @@ Report the failure and stop without changing anything.
 
 This also installs dependencies, which npm discovery needs.
 
+**Record the toolchain versions this gate ran on** - `node -v`, `mvn -v`, whatever the
+gate actually invokes - and put them in the report. A clean gate that fails because the
+run picked up a different runtime than the repo pins looks identical to a genuinely
+broken base branch, and the abort message is the only place a reader can tell them
+apart. `docs/headless.md` covers why scheduled runs hit this and interactive ones do not.
+
+**Give `gate.sh` a log path under `.git/greenbatch/`** - `gate-00-clean.log`, then
+`gate-NN-<what>.log` for each later run. Same reasoning as the report in step 8: git
+never tracks anything under `.git/`, so the logs need no `.gitignore` entry, never
+appear in `git status`, and survive the branch switches the run makes. Do not invent a
+path under `/tmp` - two runs on one machine collide there, and the logs a failure needs
+are the first thing gone when someone comes to look.
+
 ### 3. Discover and plan
 
 **Discover on the deps branch, after step 1 cut it from `origin/<base>`.** Never reuse
@@ -348,6 +361,14 @@ checkout is behind its remote, say so next to the numbers.
 The run is designed to complete with no human present. Everything above applies, with
 these differences when nobody can answer a question:
 
+- **Never end a turn with work still running in the background.** Run the gate, and
+  anything else you wait on, in the foreground. A headless session ends when your turn
+  ends: the process exits, any background task is killed mid-work, and nothing you meant
+  to do afterwards happens - including writing the report, which is the only artifact a
+  scheduled caller has. A background task does **not** re-invoke you here, however
+  reliably it does interactively, so "start the gate and report when it lands" is not a
+  plan that can complete. A long gate is a long foreground call with a long timeout, not
+  a background one.
 - **Config file missing (`config.mjs` exit 3) → abort.** Write the report with the
   paths `config.mjs` listed and what to do about it. **Never invent a `gate`, and never
   write a config file without approval.** A gate the user has not seen makes every
@@ -400,6 +421,21 @@ report-only mode looks like when no token is present.
 - **Everything in tier 1 fails together** - suspect the clean gate was not actually
   green, or a lockfile left over from a previous revert. Re-run the clean gate on the
   branch point before bisecting 20 elements one by one.
+- **A gate fails on a tree that already passed** - suspect the machine before the
+  dependency. Re-gate the untouched branch point as a control. If the control fails too,
+  or the failing set changes between identical runs, the cause is load rather than the
+  update: a suite whose timing-sensitive tests sit near their timeout starts failing when
+  something else on the box saturates the CPU. Wait for the machine to settle and re-gate
+  rather than attributing it. **Never "fix" it by editing a test, a timeout, or the gate
+  command** - that lowers the bar for every future run to buy one green result now. The
+  flakiness itself is a real finding: name the affected tests in the report and leave it
+  to a human.
+- **The run ends early, with no report and a successful exit code** - the session ended
+  its turn while the gate was still running in the background, so the process exited and
+  killed it. Confirm it rather than guessing: compare the gate log's last-modified time
+  against the session's end time. If they match to the second and the log stops
+  mid-build, nothing failed the gate, the gate was killed. See **Headless mode** - this
+  is the failure that rule exists to prevent.
 - **A Maven update never appears** - it is probably in `unmanageable`: pinned by the
   parent or an imported BOM, with no lever short of overriding the parent's tested
   version set. Report it as such; do not add a version override to force it.
